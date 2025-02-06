@@ -71,27 +71,51 @@ def login_and_download_file(retry=3):
         
         print("Accessing dashboard...")
         dashboard_response = session.get(DASHBOARD_URL, headers=headers)
+        dashboard_viewstate = get_viewstate(dashboard_response.text)
         
         for attempt in range(retry):
             try:
                 print(f"🔹 Downloading report (Attempt {attempt + 1})...")
-                download_url = f"{BASE_URL}/report/total-received-report.xhtml"
-                download_response = session.get(download_url, headers={
+                
+                # First set the date range
+                date_payload = {
+                    "dashboardForm": "dashboardForm",
+                    "dashboardForm:frmDate_input": "01-01-2025",
+                    "dashboardForm:toDate_input": datetime.now().strftime("%d-%m-%Y"),
+                    "javax.faces.ViewState": dashboard_viewstate,
+                    "javax.faces.source": "dashboardForm:j_idt136:0:j_idt170",
+                    "javax.faces.partial.event": "click",
+                    "javax.faces.partial.execute": "dashboardForm:j_idt136:0:j_idt170",
+                    "javax.faces.partial.render": "dashboardForm:j_idt136:0:j_idt170",
+                    "javax.faces.behavior.event": "action",
+                    "javax.faces.partial.ajax": "true"
+                }
+                
+                download_headers = {
                     **headers,
-                    "Accept": "application/vnd.ms-excel,application/octet-stream"
-                })
+                    "Accept": "application/vnd.ms-excel,application/excel,application/octet-stream",
+                    "Faces-Request": "partial/ajax"
+                }
+                
+                download_response = session.post(
+                    DASHBOARD_URL,
+                    data=date_payload,
+                    headers=download_headers
+                )
                 
                 if download_response.status_code == 200:
-                    # Check content type
-                    content_type = download_response.headers.get('content-type', '')
-                    print(f"Content type of downloaded file: {content_type}")
-                    
-                    output_file = "dhl_report.tmp"
+                    output_file = "dhl_report.xlsx"
                     with open(output_file, 'wb') as f:
                         f.write(download_response.content)
                     
-                    print("✅ File downloaded, analyzing format...")
-                    return output_file
+                    # Verify file is Excel
+                    with open(output_file, 'rb') as f:
+                        header = f.read(8)
+                    if header.startswith(b'PK\x03\x04') or header.startswith(b'\xD0\xCF\x11\xE0'):
+                        print("✅ Excel file downloaded successfully!")
+                        return output_file
+                    else:
+                        print("⚠️ Downloaded file is not an Excel file. Retrying...")
                 else:
                     print(f"⚠️ Download failed with status code: {download_response.status_code}")
                 
