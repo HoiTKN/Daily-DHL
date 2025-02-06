@@ -40,8 +40,7 @@ def setup_chrome_driver():
         }
     )
     
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=chrome_options)
+    return webdriver.Chrome(options=chrome_options)
 
 def login_to_dhl(driver):
     """Login to DHL portal using environment variables"""
