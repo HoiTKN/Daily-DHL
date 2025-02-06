@@ -12,15 +12,20 @@ import re
 GOOGLE_SHEET_ID = "16blaF86ky_4Eu4BK8AyXajohzpMsSyDaoPPKGVDYqWw"
 SHEET_NAME = "DHL"
 SERVICE_ACCOUNT_FILE = 'service-account.json'
-BASE_URL = "https://ecommerceportal.dhl.com"
-LOGIN_URL = f"{BASE_URL}/Portal/login"
-DASHBOARD_URL = f"{BASE_URL}/Portal/pages/customer/statisticsdashboard.xhtml"
+BASE_URL = "https://ecommerceportal.dhl.com/Portal"
+LOGIN_URL = f"{BASE_URL}/login.xhtml"
+DASHBOARD_URL = f"{BASE_URL}/pages/customer/statisticsdashboard.xhtml"
 
 def get_viewstate(html_content):
     """Extract ViewState from HTML content"""
-    match = re.search(r'<input type="hidden" name="javax\.faces\.ViewState" id="j_id__v_0:javax\.faces\.ViewState:1" value="([^"]+)"', html_content)
+    print("Looking for ViewState...")
+    # Print a small sample of the HTML to debug
+    print("HTML sample:", html_content[:200])
+    match = re.search(r'name="javax\.faces\.ViewState"\s+id="[^"]+"\s+value="([^"]+)"', html_content)
     if match:
+        print("ViewState found!")
         return match.group(1)
+    print("ViewState not found in HTML")
     return None
 
 def login_and_download_file(retry=3):
@@ -34,21 +39,19 @@ def login_and_download_file(retry=3):
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
         "Content-Type": "application/x-www-form-urlencoded",
-        "Origin": BASE_URL,
-        "Connection": "keep-alive",
-        "Referer": DASHBOARD_URL
     }
     
     try:
-        # Get initial page to get viewstate
-        response = session.get(DASHBOARD_URL, headers=headers)
+        # First get the login page
+        print("Getting login page...")
+        response = session.get(LOGIN_URL, headers=headers)
         if response.status_code != 200:
-            print(f"❌ Failed to access portal: {response.status_code}")
+            print(f"❌ Failed to access login page: {response.status_code}")
             return None
             
         viewstate = get_viewstate(response.text)
         if not viewstate:
-            print("❌ Failed to get ViewState")
+            print("❌ Failed to get ViewState from login page")
             return None
             
         # Login with credentials
@@ -57,10 +60,11 @@ def login_and_download_file(retry=3):
             "loginForm:email1": os.environ.get('DHL_USERNAME'),
             "loginForm:j_password": os.environ.get('DHL_PASSWORD'),
             "javax.faces.ViewState": viewstate,
-            "loginForm:j_idt40": ""
+            "loginForm:j_idt40": "loginForm:j_idt40"
         }
         
-        login_response = session.post(DASHBOARD_URL, data=login_payload, headers=headers)
+        print("Attempting login...")
+        login_response = session.post(LOGIN_URL, data=login_payload, headers=headers)
         
         if login_response.status_code == 200:
             print("✅ Login successful!")
@@ -68,49 +72,30 @@ def login_and_download_file(retry=3):
             print("❌ Login failed!")
             return None
         
-        # Get new viewstate after login
-        viewstate = get_viewstate(login_response.text)
-        if not viewstate:
-            print("❌ Failed to get ViewState after login")
-            return None
+        # Navigate to dashboard
+        print("Accessing dashboard...")
+        dashboard_response = session.get(DASHBOARD_URL, headers=headers)
         
         # Download report
         for attempt in range(retry):
             try:
                 print(f"🔹 Downloading report (Attempt {attempt + 1})...")
                 
-                # First set the date range
-                date_payload = {
-                    "dashboardForm": "dashboardForm",
-                    "dashboardForm:frmDate_input": "01-01-2025",
-                    "dashboardForm:toDate_input": datetime.now().strftime("%d-%m-%Y"),
-                    "javax.faces.ViewState": viewstate
-                }
+                # Get the download URL directly
+                download_url = f"{BASE_URL}/report/total-received-report.xhtml"
+                download_response = session.get(download_url, headers={
+                    **headers,
+                    "Accept": "application/vnd.ms-excel,application/octet-stream"
+                })
                 
-                session.post(DASHBOARD_URL, data=date_payload, headers=headers)
-                
-                # Then trigger the Excel download
-                download_payload = {
-                    "dashboardForm": "dashboardForm",
-                    "dashboardForm:j_idt136:0:j_idt170": "",  # This might need to be updated based on the actual button ID
-                    "javax.faces.ViewState": viewstate
-                }
-                
-                download_response = session.post(
-                    DASHBOARD_URL,
-                    data=download_payload,
-                    headers={**headers, "Accept": "application/vnd.ms-excel"}
-                )
-                
-                content_type = download_response.headers.get('content-type', '')
-                if 'excel' in content_type.lower() or 'application/vnd.ms-excel' in content_type.lower():
+                if download_response.status_code == 200:
                     output_file = "dhl_report.xlsx"
                     with open(output_file, 'wb') as f:
                         f.write(download_response.content)
-                    print(f"✅ Report downloaded successfully! Content-Type: {content_type}")
+                    print(f"✅ Report downloaded successfully!")
                     return output_file
                 else:
-                    print(f"⚠️ Received non-Excel content type: {content_type}")
+                    print(f"⚠️ Download failed with status code: {download_response.status_code}")
                 
             except Exception as e:
                 print(f"❌ Download attempt {attempt + 1} failed: {str(e)}")
@@ -119,6 +104,7 @@ def login_and_download_file(retry=3):
                     
     except Exception as e:
         print(f"❌ Error in process: {str(e)}")
+        print(f"Error details: {type(e).__name__}, {str(e)}")
     return None
 
 def process_data(file_path):
