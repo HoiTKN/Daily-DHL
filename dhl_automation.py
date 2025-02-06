@@ -166,31 +166,50 @@ def process_data(file_path):
     print(f"🔹 Processing file: {file_path}")
     
     try:
-        # Read the first few bytes to check file signature
+        # First, let's examine the file content
         with open(file_path, 'rb') as f:
-            header = f.read(8)
             content = f.read()
+            print(f"File size: {len(content)} bytes")
+            print("First 200 bytes:", content[:200])
             f.seek(0)
-            
-        # Try reading with different formats
+        
         try:
             print("📄 Trying to read file...")
             df = pd.read_csv(file_path, encoding='utf-8')
             print("✅ Successfully read file")
-        except:
-            print("⚠️ Failed to read as CSV, trying other formats...")
+        except Exception as e:
+            print(f"⚠️ Failed to read as CSV: {str(e)}, trying other formats...")
             try:
                 df = pd.read_excel(file_path)
                 print("✅ Successfully read as Excel")
-            except:
+            except Exception as e:
+                print(f"⚠️ Failed to read as Excel: {str(e)}")
                 raise ValueError("Could not read file in any format")
 
+        # Print actual columns we received
+        print("\nActual columns in the file:")
+        print(df.columns.tolist())
+        print("\nFirst few rows of raw data:")
+        print(df.head())
+
         print("🔹 Processing data...")
+        
+        # Check if required columns exist
+        required_columns = ['Consignee Name', 'Tracking ID', 'Pickup Event DateTime', 'Delivery Date', 'Last Status']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            print(f"❌ Missing required columns: {missing_columns}")
+            # Try to find similar column names
+            for missing_col in missing_columns:
+                similar_cols = [col for col in df.columns if missing_col.lower() in col.lower()]
+                if similar_cols:
+                    print(f"Found similar columns for '{missing_col}': {similar_cols}")
+
         # Extract Order ID (first 7 digits from Consignee Name)
         def extract_order_id(text):
             if pd.isna(text):
                 return ''
-            match = re.search(r'^(\d{7})', str(text))
+            match = re.search(r'(\d{7})', str(text))
             return match.group(1) if match else ''
 
         processed_df = pd.DataFrame({
@@ -213,14 +232,14 @@ def process_data(file_path):
         print("✅ Data processing completed successfully")
         print(f"Processed {len(processed_df)} rows")
         
-        # Print first few rows for verification
-        print("\nFirst few rows of processed data:")
-        print(processed_df.head())
-        
         return processed_df
         
     except Exception as e:
         print(f"❌ Error processing data: {str(e)}")
+        # Add stack trace for better debugging
+        import traceback
+        print("Stack trace:")
+        print(traceback.format_exc())
         raise
         
 def upload_to_google_sheets(df):
