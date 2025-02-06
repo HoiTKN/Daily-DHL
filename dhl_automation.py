@@ -27,7 +27,7 @@ def get_viewstate(html_content):
     print("ViewState not found in HTML")
     return None
 
-ddef login_and_download_file(retry=3):
+def login_and_download_file(retry=3):
     """Login to DHL portal and download report"""
     session = requests.Session()
     
