@@ -56,11 +56,9 @@ def login_and_download_file(retry=3):
             
         # Login with credentials
         login_payload = {
-            "loginForm": "loginForm",
-            "loginForm:email1": os.environ.get('DHL_USERNAME'),
-            "loginForm:j_password": os.environ.get('DHL_PASSWORD'),
-            "javax.faces.ViewState": viewstate,
-            "loginForm:j_idt40": "loginForm:j_idt40"
+            "j_username": "truongcongdai4@gmail.com",
+            "j_password": "Thavi@26052565",
+            "javax.faces.ViewState": viewstate
         }
         
         print("Attempting login...")
@@ -72,54 +70,56 @@ def login_and_download_file(retry=3):
             print("❌ Login failed!")
             return None
         
-        # Get dashboard and new viewstate
+        # Change language to English
         dashboard_response = session.get(DASHBOARD_URL, headers=headers)
         dashboard_viewstate = get_viewstate(dashboard_response.text)
+        
+        language_payload = {
+            "j_idt19": "j_idt19",
+            "j_idt19:j_idt21_input": "en",
+            "javax.faces.ViewState": dashboard_viewstate
+        }
+        
+        session.post(DASHBOARD_URL, data=language_payload, headers=headers)
         
         for attempt in range(retry):
             try:
                 print(f"🔹 Downloading report (Attempt {attempt + 1})...")
                 
-                # First set the date range and generate report
-                generate_payload = {
+                # Set date range and generate report
+                dashboard_response = session.get(DASHBOARD_URL, headers=headers)
+                dashboard_viewstate = get_viewstate(dashboard_response.text)
+                
+                date_payload = {
                     "dashboardForm": "dashboardForm",
-                    "dashboardForm:soldto_focus": "",
-                    "dashboardForm:soldto_input": "Mr. Truong Cong Dai~5302496176",
-                    "dashboardForm:pickup_focus": "",
-                    "dashboardForm:pickup": ["TV035~5398979", "Thevi Bangkok Service Ltd.~5391014"],
-                    "dashboardForm:servProduct_focus": "",
-                    "dashboardForm:servProduct": ["PDR", "PDO"],
                     "dashboardForm:frmDate_input": "01-01-2025",
                     "dashboardForm:toDate_input": datetime.now().strftime("%d-%m-%Y"),
-                    "dashboardForm:downloadStreamContent": "",
-                    "javax.faces.ViewState": dashboard_viewstate,
-                    "dashboardForm:j_idt83": "dashboardForm:j_idt83"  # Generate button
+                    "javax.faces.ViewState": dashboard_viewstate
                 }
                 
-                generate_response = session.post(DASHBOARD_URL, data=generate_payload, headers=headers)
+                session.post(DASHBOARD_URL, data=date_payload, headers=headers)
                 
-                # Now trigger the Excel download
+                # Get updated viewstate after date setting
+                dashboard_response = session.get(DASHBOARD_URL, headers=headers)
+                dashboard_viewstate = get_viewstate(dashboard_response.text)
+                
+                # Download Excel file
                 download_payload = {
                     "dashboardForm": "dashboardForm",
-                    "javax.faces.partial.ajax": "true",
-                    "javax.faces.source": "dashboardForm:j_idt136:0:xlsIcon",
-                    "javax.faces.partial.execute": "dashboardForm:j_idt136:0:xlsIcon",
-                    "javax.faces.partial.render": "dashboardForm:j_idt136:0:xlsIcon",
-                    "dashboardForm:j_idt136:0:xlsIcon": "dashboardForm:j_idt136:0:xlsIcon",
+                    "dashboardForm:j_idt116": "dashboardForm:j_idt116",
                     "javax.faces.ViewState": dashboard_viewstate
                 }
                 
                 download_headers = {
                     **headers,
-                    "Accept": "application/vnd.ms-excel,application/excel,application/octet-stream",
-                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                    "Faces-Request": "partial/ajax",
-                    "X-Requested-With": "XMLHttpRequest"
+                    "Accept": "application/vnd.ms-excel",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
                 }
                 
-                download_response = session.post(
-                    DASHBOARD_URL,
-                    data=download_payload,
+                # Make the actual download request
+                download_url = f"{BASE_URL}/report/total-received-report.xhtml"
+                download_response = session.get(
+                    download_url,
                     headers=download_headers,
                     allow_redirects=True
                 )
@@ -128,27 +128,14 @@ def login_and_download_file(retry=3):
                     content_type = download_response.headers.get('content-type', '')
                     print(f"Content type: {content_type}")
                     
-                    # Check if we got a redirect URL in the response
-                    if "excel/report" in download_response.text or "downloadFile" in download_response.text:
-                        # Extract the download URL from response
-                        download_url_match = re.search(r'"url":"([^"]+)"', download_response.text)
-                        if download_url_match:
-                            file_url = download_url_match.group(1).replace('\\', '')
-                            file_response = session.get(f"{BASE_URL}{file_url}", headers={"Accept": "application/vnd.ms-excel"})
-                            
-                            output_file = "dhl_report.xlsx"
-                            with open(output_file, 'wb') as f:
-                                f.write(file_response.content)
-                            
-                            print("✅ Report downloaded successfully!")
-                            return output_file
-                    
-                    output_file = "dhl_report.xlsx"
-                    with open(output_file, 'wb') as f:
-                        f.write(download_response.content)
-                    
-                    print("✅ Report downloaded successfully!")
-                    return output_file
+                    if 'excel' in content_type.lower() or 'application/vnd.ms-excel' in content_type.lower():
+                        output_file = "dhl_report.xlsx"
+                        with open(output_file, 'wb') as f:
+                            f.write(download_response.content)
+                        print("✅ Report downloaded successfully!")
+                        return output_file
+                    else:
+                        print("⚠️ Received non-Excel content")
                 else:
                     print(f"⚠️ Download failed with status code: {download_response.status_code}")
                 
