@@ -2,9 +2,8 @@ name: DHL Report Automation
 
 on:
   schedule:
-    # Run at 8 AM Vietnam time (1 AM UTC)
     - cron: '0 1 * * *'
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   automate-dhl:
@@ -17,6 +16,21 @@ jobs:
       uses: actions/setup-python@v2
       with:
         python-version: '3.9'
+    
+    - name: Install Chrome and ChromeDriver
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
+        chrome_version=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}')
+        wget -q "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${chrome_version}" -O chrome_version.txt
+        chromedriver_version=$(cat chrome_version.txt)
+        wget -q "https://chromedriver.storage.googleapis.com/${chromedriver_version}/chromedriver_linux64.zip"
+        unzip chromedriver_linux64.zip
+        sudo mv chromedriver /usr/local/bin/
+        sudo chmod +x /usr/local/bin/chromedriver
+        rm chromedriver_linux64.zip chrome_version.txt
+        google-chrome --version
+        chromedriver --version
     
     - name: Install dependencies
       run: |
