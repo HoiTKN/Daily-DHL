@@ -1,48 +1,32 @@
 name: DHL Report Automation
-
 on:
   schedule:
-    - cron: '0 1 * * *'
-  workflow_dispatch:
+    - cron: '0 1 * * *'  # 8 AM Vietnam time
+  workflow_dispatch:  # Allows manual trigger
 
 jobs:
-  automate-dhl:
+  run-script:
     runs-on: ubuntu-latest
-    
     steps:
-    - uses: actions/checkout@v2
-    
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.9'
-
-    - name: Setup Chrome
-      uses: browser-actions/setup-chrome@latest
-      with:
-        chrome-version: stable
-    
-    - name: Setup ChromeDriver
-      uses: nanasess/setup-chromedriver@master
-      with:
-        chromedriver-version: '114.0.5735.90'
-    
-    - name: Start ChromeDriver
-      run: |
-        export DISPLAY=:99
-        chromedriver --url-base=/wd/hub &
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    
-    - name: Create service account file
-      run: |
-        echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT }}" > service-account.json
-    
-    - name: Run DHL automation
-      env:
-        DHL_USERNAME: ${{ secrets.DHL_USERNAME }}
-        DHL_PASSWORD: ${{ secrets.DHL_PASSWORD }}
-      run: python dhl_automation.py
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+      
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install --no-cache-dir openpyxl xlrd
+      
+      - name: Create service account file
+        run: echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT }}" > service-account.json
+      
+      - name: Run DHL automation
+        env:
+          DHL_USERNAME: ${{ secrets.DHL_USERNAME }}
+          DHL_PASSWORD: ${{ secrets.DHL_PASSWORD }}
+        run: python dhl_automation.py
