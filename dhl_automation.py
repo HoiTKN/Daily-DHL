@@ -80,8 +80,8 @@ def login_and_download_file(retry=3):
             try:
                 print(f"🔹 Downloading report (Attempt {attempt + 1})...")
                 
-                # Prepare download payload with exact parameters from the request
-                download_payload = {
+                # First set the date range and generate report
+                generate_payload = {
                     "dashboardForm": "dashboardForm",
                     "dashboardForm:soldto_focus": "",
                     "dashboardForm:soldto_input": "Mr. Truong Cong Dai~5302496176",
@@ -92,13 +92,29 @@ def login_and_download_file(retry=3):
                     "dashboardForm:frmDate_input": "01-01-2025",
                     "dashboardForm:toDate_input": datetime.now().strftime("%d-%m-%Y"),
                     "dashboardForm:downloadStreamContent": "",
+                    "javax.faces.ViewState": dashboard_viewstate,
+                    "dashboardForm:j_idt83": "dashboardForm:j_idt83"  # Generate button
+                }
+                
+                generate_response = session.post(DASHBOARD_URL, data=generate_payload, headers=headers)
+                
+                # Now trigger the Excel download
+                download_payload = {
+                    "dashboardForm": "dashboardForm",
+                    "javax.faces.partial.ajax": "true",
+                    "javax.faces.source": "dashboardForm:j_idt136:0:xlsIcon",
+                    "javax.faces.partial.execute": "dashboardForm:j_idt136:0:xlsIcon",
+                    "javax.faces.partial.render": "dashboardForm:j_idt136:0:xlsIcon",
+                    "dashboardForm:j_idt136:0:xlsIcon": "dashboardForm:j_idt136:0:xlsIcon",
                     "javax.faces.ViewState": dashboard_viewstate
                 }
                 
                 download_headers = {
                     **headers,
                     "Accept": "application/vnd.ms-excel,application/excel,application/octet-stream",
-                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "Faces-Request": "partial/ajax",
+                    "X-Requested-With": "XMLHttpRequest"
                 }
                 
                 download_response = session.post(
@@ -111,6 +127,21 @@ def login_and_download_file(retry=3):
                 if download_response.status_code == 200:
                     content_type = download_response.headers.get('content-type', '')
                     print(f"Content type: {content_type}")
+                    
+                    # Check if we got a redirect URL in the response
+                    if "excel/report" in download_response.text or "downloadFile" in download_response.text:
+                        # Extract the download URL from response
+                        download_url_match = re.search(r'"url":"([^"]+)"', download_response.text)
+                        if download_url_match:
+                            file_url = download_url_match.group(1).replace('\\', '')
+                            file_response = session.get(f"{BASE_URL}{file_url}", headers={"Accept": "application/vnd.ms-excel"})
+                            
+                            output_file = "dhl_report.xlsx"
+                            with open(output_file, 'wb') as f:
+                                f.write(file_response.content)
+                            
+                            print("✅ Report downloaded successfully!")
+                            return output_file
                     
                     output_file = "dhl_report.xlsx"
                     with open(output_file, 'wb') as f:
