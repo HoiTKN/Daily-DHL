@@ -27,7 +27,7 @@ def get_viewstate(html_content):
     print("ViewState not found in HTML")
     return None
 
-def login_and_download_file(retry=3):
+ddef login_and_download_file(retry=3):
     """Login to DHL portal and download report"""
     session = requests.Session()
     
@@ -38,10 +38,12 @@ def login_and_download_file(retry=3):
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
         "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://ecommerceportal.dhl.com",
+        "Referer": "https://ecommerceportal.dhl.com/Portal/pages/customer/statisticsdashboard.xhtml"
     }
     
     try:
-        print("Getting login page...")
+        # Get initial page to get viewstate
         response = session.get(LOGIN_URL, headers=headers)
         if response.status_code != 200:
             print(f"❌ Failed to access login page: {response.status_code}")
@@ -52,6 +54,7 @@ def login_and_download_file(retry=3):
             print("❌ Failed to get ViewState from login page")
             return None
             
+        # Login with credentials
         login_payload = {
             "loginForm": "loginForm",
             "loginForm:email1": os.environ.get('DHL_USERNAME'),
@@ -69,7 +72,7 @@ def login_and_download_file(retry=3):
             print("❌ Login failed!")
             return None
         
-        print("Accessing dashboard...")
+        # Get dashboard and new viewstate
         dashboard_response = session.get(DASHBOARD_URL, headers=headers)
         dashboard_viewstate = get_viewstate(dashboard_response.text)
         
@@ -77,45 +80,44 @@ def login_and_download_file(retry=3):
             try:
                 print(f"🔹 Downloading report (Attempt {attempt + 1})...")
                 
-                # First set the date range
-                date_payload = {
+                # Prepare download payload with exact parameters from the request
+                download_payload = {
                     "dashboardForm": "dashboardForm",
+                    "dashboardForm:soldto_focus": "",
+                    "dashboardForm:soldto_input": "Mr. Truong Cong Dai~5302496176",
+                    "dashboardForm:pickup_focus": "",
+                    "dashboardForm:pickup": ["TV035~5398979", "Thevi Bangkok Service Ltd.~5391014"],
+                    "dashboardForm:servProduct_focus": "",
+                    "dashboardForm:servProduct": ["PDR", "PDO"],
                     "dashboardForm:frmDate_input": "01-01-2025",
                     "dashboardForm:toDate_input": datetime.now().strftime("%d-%m-%Y"),
-                    "javax.faces.ViewState": dashboard_viewstate,
-                    "javax.faces.source": "dashboardForm:j_idt136:0:j_idt170",
-                    "javax.faces.partial.event": "click",
-                    "javax.faces.partial.execute": "dashboardForm:j_idt136:0:j_idt170",
-                    "javax.faces.partial.render": "dashboardForm:j_idt136:0:j_idt170",
-                    "javax.faces.behavior.event": "action",
-                    "javax.faces.partial.ajax": "true"
+                    "dashboardForm:downloadStreamContent": "",
+                    "javax.faces.ViewState": dashboard_viewstate
                 }
                 
                 download_headers = {
                     **headers,
                     "Accept": "application/vnd.ms-excel,application/excel,application/octet-stream",
-                    "Faces-Request": "partial/ajax"
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
                 }
                 
                 download_response = session.post(
                     DASHBOARD_URL,
-                    data=date_payload,
-                    headers=download_headers
+                    data=download_payload,
+                    headers=download_headers,
+                    allow_redirects=True
                 )
                 
                 if download_response.status_code == 200:
+                    content_type = download_response.headers.get('content-type', '')
+                    print(f"Content type: {content_type}")
+                    
                     output_file = "dhl_report.xlsx"
                     with open(output_file, 'wb') as f:
                         f.write(download_response.content)
                     
-                    # Verify file is Excel
-                    with open(output_file, 'rb') as f:
-                        header = f.read(8)
-                    if header.startswith(b'PK\x03\x04') or header.startswith(b'\xD0\xCF\x11\xE0'):
-                        print("✅ Excel file downloaded successfully!")
-                        return output_file
-                    else:
-                        print("⚠️ Downloaded file is not an Excel file. Retrying...")
+                    print("✅ Report downloaded successfully!")
+                    return output_file
                 else:
                     print(f"⚠️ Download failed with status code: {download_response.status_code}")
                 
@@ -128,7 +130,6 @@ def login_and_download_file(retry=3):
         print(f"❌ Error in process: {str(e)}")
         print(f"Error details: {type(e).__name__}, {str(e)}")
     return None
-
 def process_data(file_path):
     """Process the downloaded DHL report with smart format detection"""
     print(f"🔹 Processing file: {file_path}")
