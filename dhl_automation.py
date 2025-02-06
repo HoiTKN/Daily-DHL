@@ -172,69 +172,57 @@ def process_data(file_path):
             content = f.read()
             f.seek(0)
             
-        # Check if it's HTML content
-        if content.startswith(b'<!DOCTYPE') or content.startswith(b'<html'):
-            print("📄 Detected HTML content, trying to parse tables...")
-            df_list = pd.read_html(file_path)
-            if len(df_list) > 0:
-                df = df_list[0]
-                print("✅ Successfully parsed HTML table")
-            else:
-                raise ValueError("No tables found in HTML content")
-                
-        # Check if it's Excel (XLSX)
-        elif header.startswith(b'PK\x03\x04'):
-            print("📄 Detected XLSX format...")
-            df = pd.read_excel(file_path, engine='openpyxl')
-            
-        # Check if it's old Excel (XLS)
-        elif header.startswith(b'\xD0\xCF\x11\xE0'):
-            print("📄 Detected XLS format...")
-            df = pd.read_excel(file_path, engine='xlrd')
-            
-        # Try CSV with different encodings and delimiters
-        else:
-            print("📄 Trying CSV format with different configurations...")
-            encodings = ['utf-8', 'latin1', 'iso-8859-1']
-            delimiters = [',', '\t', ';']
-            
-            for encoding in encodings:
-                for delimiter in delimiters:
-                    try:
-                        df = pd.read_csv(file_path, encoding=encoding, sep=delimiter)
-                        print(f"✅ Successfully read as CSV with encoding {encoding} and delimiter {delimiter}")
-                        break
-                    except:
-                        continue
-                if 'df' in locals():
-                    break
-                    
-            if 'df' not in locals():
-                raise ValueError("Could not determine file format")
-        
+        # Try reading with different formats
+        try:
+            print("📄 Trying to read file...")
+            df = pd.read_csv(file_path, encoding='utf-8')
+            print("✅ Successfully read file")
+        except:
+            print("⚠️ Failed to read as CSV, trying other formats...")
+            try:
+                df = pd.read_excel(file_path)
+                print("✅ Successfully read as Excel")
+            except:
+                raise ValueError("Could not read file in any format")
+
         print("🔹 Processing data...")
+        # Extract Order ID (first 7 digits from Consignee Name)
+        def extract_order_id(text):
+            if pd.isna(text):
+                return ''
+            match = re.search(r'^(\d{7})', str(text))
+            return match.group(1) if match else ''
+
         processed_df = pd.DataFrame({
-            'Order ID': df['Consignee Name'].str.extract(r'(\d{7})')[0].fillna(''),
+            'Order ID': df['Consignee Name'].apply(extract_order_id),
             'Tracking Number': df['Tracking ID'].fillna(''),
             'Pickup DateTime': pd.to_datetime(df['Pickup Event DateTime'], errors='coerce').fillna(pd.NaT),
             'Delivery Date': pd.to_datetime(df['Delivery Date'], errors='coerce').fillna(pd.NaT),
             'Status': df['Last Status'].fillna('')
         })
         
+        # Format datetime columns
         processed_df['Pickup DateTime'] = processed_df['Pickup DateTime'].apply(
             lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(x) else '')
         processed_df['Delivery Date'] = processed_df['Delivery Date'].apply(
             lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(x) else '')
         
+        # Clean up any remaining NaN values
         processed_df = processed_df.replace({np.nan: '', 'NaT': '', None: ''})
         
         print("✅ Data processing completed successfully")
+        print(f"Processed {len(processed_df)} rows")
+        
+        # Print first few rows for verification
+        print("\nFirst few rows of processed data:")
+        print(processed_df.head())
+        
         return processed_df
         
     except Exception as e:
         print(f"❌ Error processing data: {str(e)}")
         raise
-
+        
 def upload_to_google_sheets(df):
     """Upload processed data to Google Sheets"""
     print("🔹 Preparing to upload to Google Sheets...")
