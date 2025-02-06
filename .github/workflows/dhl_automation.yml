@@ -1,46 +1,42 @@
-name: DHL Automation
+name: DHL Report Automation
 
 on:
   schedule:
-    - cron: '0 1 * * *'  # 8 AM Vietnam time is 1 AM UTC
-  workflow_dispatch:
+    # Run at 8 AM Vietnam time (1 AM UTC)
+    - cron: '0 1 * * *'
+  workflow_dispatch:  # Allows manual trigger
 
 jobs:
-  run-dhl-automation:
+  automate-dhl:
     runs-on: ubuntu-latest
-
+    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
-
+    - uses: actions/checkout@v2
+    
     - name: Set up Python
       uses: actions/setup-python@v2
       with:
-        python-version: '3.8'
-
+        python-version: '3.9'
+    
+    - name: Set up Chrome
+      uses: browser-actions/setup-chrome@latest
+      with:
+        chrome-version: stable
+    
+    - name: Set up ChromeDriver
+      uses: nanasess/setup-chromedriver@master
+    
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-
-    - name: Install ChromeDriver
+    
+    - name: Create service account file
       run: |
-        sudo apt-get update
-        sudo apt-get install -y wget unzip
-        wget -N https://chromedriver.storage.googleapis.com/94.0.4606.61/chromedriver_linux64.zip
-        unzip chromedriver_linux64.zip
-        sudo mv chromedriver /usr/local/bin/chromedriver
-        sudo chmod +x /usr/local/bin/chromedriver
-        rm chromedriver_linux64.zip
-
-    - name: Run DHL Automation Script
-      run: |
-        python dhl_automation.py
-
-    - name: Upload logs
-      uses: actions/upload-artifact@v2
-      with:
-        name: logs
-        path: |
-          *.log
-          *.txt
+        echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT }}" > service-account.json
+    
+    - name: Run DHL automation
+      env:
+        DHL_USERNAME: ${{ secrets.DHL_USERNAME }}
+        DHL_PASSWORD: ${{ secrets.DHL_PASSWORD }}
+      run: python dhl_automation.py
