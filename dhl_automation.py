@@ -6,13 +6,22 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from datetime import datetime
 import numpy as np
+import re
 
 # Constants
 GOOGLE_SHEET_ID = "16blaF86ky_4Eu4BK8AyXajohzpMsSyDaoPPKGVDYqWw"
 SHEET_NAME = "DHL"
 SERVICE_ACCOUNT_FILE = 'service-account.json'
-LOGIN_URL = "https://ecommerceportal.dhl.com/Portal/pages/customer/statisticsdashboard.xhtml"
-DOWNLOAD_URL = "https://ecommerceportal.dhl.com/Portal/pages/customer/statisticsdashboard.xhtml"
+BASE_URL = "https://ecommerceportal.dhl.com"
+LOGIN_URL = f"{BASE_URL}/Portal/login"
+DASHBOARD_URL = f"{BASE_URL}/Portal/pages/customer/statisticsdashboard.xhtml"
+
+def get_viewstate(html_content):
+    """Extract ViewState from HTML content"""
+    match = re.search(r'<input type="hidden" name="javax\.faces\.ViewState" id="j_id__v_0:javax\.faces\.ViewState:1" value="([^"]+)"', html_content)
+    if match:
+        return match.group(1)
+    return None
 
 def login_and_download_file(retry=3):
     """Login to DHL portal and download report"""
@@ -21,24 +30,37 @@ def login_and_download_file(retry=3):
     print("🔹 Accessing DHL portal...")
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": BASE_URL,
+        "Connection": "keep-alive",
+        "Referer": DASHBOARD_URL
     }
     
     try:
         # Get initial page to get viewstate
-        response = session.get(LOGIN_URL, headers=headers)
+        response = session.get(DASHBOARD_URL, headers=headers)
         if response.status_code != 200:
             print(f"❌ Failed to access portal: {response.status_code}")
             return None
             
+        viewstate = get_viewstate(response.text)
+        if not viewstate:
+            print("❌ Failed to get ViewState")
+            return None
+            
         # Login with credentials
         login_payload = {
-            "j_username": os.environ.get('DHL_USERNAME'),
-            "j_password": os.environ.get('DHL_PASSWORD'),
-            "loginForm": "loginForm"
+            "loginForm": "loginForm",
+            "loginForm:email1": os.environ.get('DHL_USERNAME'),
+            "loginForm:j_password": os.environ.get('DHL_PASSWORD'),
+            "javax.faces.ViewState": viewstate,
+            "loginForm:j_idt40": ""
         }
         
-        login_response = session.post(LOGIN_URL, data=login_payload, headers=headers)
+        login_response = session.post(DASHBOARD_URL, data=login_payload, headers=headers)
         
         if login_response.status_code == 200:
             print("✅ Login successful!")
@@ -46,22 +68,49 @@ def login_and_download_file(retry=3):
             print("❌ Login failed!")
             return None
         
+        # Get new viewstate after login
+        viewstate = get_viewstate(login_response.text)
+        if not viewstate:
+            print("❌ Failed to get ViewState after login")
+            return None
+        
         # Download report
         for attempt in range(retry):
             try:
                 print(f"🔹 Downloading report (Attempt {attempt + 1})...")
                 
-                download_response = session.get(DOWNLOAD_URL, headers={
-                    **headers,
-                    'Accept': 'application/vnd.ms-excel'
-                })
+                # First set the date range
+                date_payload = {
+                    "dashboardForm": "dashboardForm",
+                    "dashboardForm:frmDate_input": "01-01-2025",
+                    "dashboardForm:toDate_input": datetime.now().strftime("%d-%m-%Y"),
+                    "javax.faces.ViewState": viewstate
+                }
                 
-                if download_response.status_code == 200:
+                session.post(DASHBOARD_URL, data=date_payload, headers=headers)
+                
+                # Then trigger the Excel download
+                download_payload = {
+                    "dashboardForm": "dashboardForm",
+                    "dashboardForm:j_idt136:0:j_idt170": "",  # This might need to be updated based on the actual button ID
+                    "javax.faces.ViewState": viewstate
+                }
+                
+                download_response = session.post(
+                    DASHBOARD_URL,
+                    data=download_payload,
+                    headers={**headers, "Accept": "application/vnd.ms-excel"}
+                )
+                
+                content_type = download_response.headers.get('content-type', '')
+                if 'excel' in content_type.lower() or 'application/vnd.ms-excel' in content_type.lower():
                     output_file = "dhl_report.xlsx"
                     with open(output_file, 'wb') as f:
                         f.write(download_response.content)
-                    print("✅ Report downloaded successfully!")
+                    print(f"✅ Report downloaded successfully! Content-Type: {content_type}")
                     return output_file
+                else:
+                    print(f"⚠️ Received non-Excel content type: {content_type}")
                 
             except Exception as e:
                 print(f"❌ Download attempt {attempt + 1} failed: {str(e)}")
