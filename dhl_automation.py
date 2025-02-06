@@ -11,43 +11,87 @@ import numpy as np
 GOOGLE_SHEET_ID = "16blaF86ky_4Eu4BK8AyXajohzpMsSyDaoPPKGVDYqWw"
 SHEET_NAME = "DHL"
 SERVICE_ACCOUNT_FILE = 'service-account.json'
-LOGIN_URL = "https://ecommerceportal.dhl.com/Portal/pages/customer/statisticsdashboard.xhtml"
-DOWNLOAD_URL = "https://ecommerceportal.dhl.com/Portal/pages/customer/statisticsdashboard.xhtml"  # Update this with correct download URL
+BASE_URL = "https://ecommerceportal.dhl.com"
+LOGIN_URL = f"{BASE_URL}/Portal/pages/customer/statisticsdashboard.xhtml"
 
 def login_and_download_file(retry=3):
     """Login to DHL portal and download report using requests"""
     session = requests.Session()
     
     print("🔹 Accessing DHL portal...")
-    login_payload = {
-        "username": os.environ.get('DHL_USERNAME'),
-        "password": os.environ.get('DHL_PASSWORD')
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
     
+    # Initial GET request to get JSESSIONID and view state
     try:
-        # Login
-        response = session.post(LOGIN_URL, data=login_payload, headers=headers)
-        if response.status_code == 200:
-            print("✅ Login successful!")
-        else:
-            print(f"❌ Login failed! Status code: {response.status_code}")
+        initial_response = session.get(LOGIN_URL)
+        if initial_response.status_code != 200:
+            print(f"❌ Failed to access portal: {initial_response.status_code}")
             return None
             
-        # Download report
+        # Extract ViewState from the response
+        view_state = ""  # We'll need to extract this from the HTML
+        # You might need to use regex or HTML parsing to get the viewstate
+        
+        # Login with proper form data
+        login_payload = {
+            "loginForm": "loginForm",
+            "loginForm:email1": os.environ.get('DHL_USERNAME'),
+            "loginForm:j_password": os.environ.get('DHL_PASSWORD'),
+            "javax.faces.ViewState": view_state,
+            "loginForm:j_idt40": "loginForm:j_idt40"
+        }
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        }
+        
+        login_response = session.post(LOGIN_URL, data=login_payload, headers=headers)
+        
+        if "Welcome" in login_response.text or "Dashboard" in login_response.text:
+            print("✅ Login successful!")
+        else:
+            print("❌ Login failed!")
+            return None
+            
+        # Now navigate to the report page and download
         for attempt in range(retry):
             try:
                 print(f"🔹 Downloading report (Attempt {attempt + 1})...")
-                response = session.get(DOWNLOAD_URL, headers=headers)
                 
-                if response.status_code == 200:
+                # Make a GET request to the report page first
+                report_url = f"{BASE_URL}/Portal/pages/customer/statisticsdashboard.xhtml"
+                report_response = session.get(report_url)
+                
+                # Extract the new ViewState for the report download
+                # You'll need to extract this from the response HTML
+                
+                # Prepare the download request with proper form data
+                download_payload = {
+                    "dashboardForm": "dashboardForm",
+                    "javax.faces.ViewState": view_state,
+                    "dashboardForm:xlsIcon": "dashboardForm:xlsIcon"
+                }
+                
+                # Make the download request
+                download_response = session.post(
+                    report_url,
+                    data=download_payload,
+                    headers={
+                        **headers,
+                        "Accept": "application/vnd.ms-excel"
+                    }
+                )
+                
+                if download_response.headers.get('content-type', '').startswith('application/vnd.ms-excel'):
                     output_path = "dhl_report.xlsx"
                     with open(output_path, 'wb') as f:
-                        f.write(response.content)
+                        f.write(download_response.content)
                     print("✅ Report downloaded successfully!")
                     return output_path
+                else:
+                    print(f"❌ Received wrong content type: {download_response.headers.get('content-type')}")
+                    
             except Exception as e:
                 print(f"❌ Download attempt {attempt + 1} failed: {str(e)}")
                 if attempt < retry - 1:
