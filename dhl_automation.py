@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import pandas as pd
+import mimetypes
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from datetime import datetime
@@ -19,8 +20,6 @@ DASHBOARD_URL = f"{BASE_URL}/pages/customer/statisticsdashboard.xhtml"
 def get_viewstate(html_content):
     """Extract ViewState from HTML content"""
     print("Looking for ViewState...")
-    # Print a small sample of the HTML to debug
-    print("HTML sample:", html_content[:200])
     match = re.search(r'name="javax\.faces\.ViewState"\s+id="[^"]+"\s+value="([^"]+)"', html_content)
     if match:
         print("ViewState found!")
@@ -42,7 +41,6 @@ def login_and_download_file(retry=3):
     }
     
     try:
-        # First get the login page
         print("Getting login page...")
         response = session.get(LOGIN_URL, headers=headers)
         if response.status_code != 200:
@@ -54,7 +52,6 @@ def login_and_download_file(retry=3):
             print("❌ Failed to get ViewState from login page")
             return None
             
-        # Login with credentials
         login_payload = {
             "loginForm": "loginForm",
             "loginForm:email1": os.environ.get('DHL_USERNAME'),
@@ -72,16 +69,12 @@ def login_and_download_file(retry=3):
             print("❌ Login failed!")
             return None
         
-        # Navigate to dashboard
         print("Accessing dashboard...")
         dashboard_response = session.get(DASHBOARD_URL, headers=headers)
         
-        # Download report
         for attempt in range(retry):
             try:
                 print(f"🔹 Downloading report (Attempt {attempt + 1})...")
-                
-                # Get the download URL directly
                 download_url = f"{BASE_URL}/report/total-received-report.xhtml"
                 download_response = session.get(download_url, headers={
                     **headers,
@@ -89,10 +82,15 @@ def login_and_download_file(retry=3):
                 })
                 
                 if download_response.status_code == 200:
-                    output_file = "dhl_report.xlsx"
+                    # Check content type
+                    content_type = download_response.headers.get('content-type', '')
+                    print(f"Content type of downloaded file: {content_type}")
+                    
+                    output_file = "dhl_report.tmp"
                     with open(output_file, 'wb') as f:
                         f.write(download_response.content)
-                    print(f"✅ Report downloaded successfully!")
+                    
+                    print("✅ File downloaded, analyzing format...")
                     return output_file
                 else:
                     print(f"⚠️ Download failed with status code: {download_response.status_code}")
@@ -108,17 +106,57 @@ def login_and_download_file(retry=3):
     return None
 
 def process_data(file_path):
-    """Process the downloaded DHL report"""
+    """Process the downloaded DHL report with smart format detection"""
     print(f"🔹 Processing file: {file_path}")
     
     try:
-        # Try different methods to read the file
-        try:
+        # Read the first few bytes to check file signature
+        with open(file_path, 'rb') as f:
+            header = f.read(8)
+            content = f.read()
+            f.seek(0)
+            
+        # Check if it's HTML content
+        if content.startswith(b'<!DOCTYPE') or content.startswith(b'<html'):
+            print("📄 Detected HTML content, trying to parse tables...")
+            df_list = pd.read_html(file_path)
+            if len(df_list) > 0:
+                df = df_list[0]
+                print("✅ Successfully parsed HTML table")
+            else:
+                raise ValueError("No tables found in HTML content")
+                
+        # Check if it's Excel (XLSX)
+        elif header.startswith(b'PK\x03\x04'):
+            print("📄 Detected XLSX format...")
             df = pd.read_excel(file_path, engine='openpyxl')
-        except Exception as e:
-            print(f"⚠️ Failed to read with openpyxl: {e}, trying xlrd...")
+            
+        # Check if it's old Excel (XLS)
+        elif header.startswith(b'\xD0\xCF\x11\xE0'):
+            print("📄 Detected XLS format...")
             df = pd.read_excel(file_path, engine='xlrd')
+            
+        # Try CSV with different encodings and delimiters
+        else:
+            print("📄 Trying CSV format with different configurations...")
+            encodings = ['utf-8', 'latin1', 'iso-8859-1']
+            delimiters = [',', '\t', ';']
+            
+            for encoding in encodings:
+                for delimiter in delimiters:
+                    try:
+                        df = pd.read_csv(file_path, encoding=encoding, sep=delimiter)
+                        print(f"✅ Successfully read as CSV with encoding {encoding} and delimiter {delimiter}")
+                        break
+                    except:
+                        continue
+                if 'df' in locals():
+                    break
+                    
+            if 'df' not in locals():
+                raise ValueError("Could not determine file format")
         
+        print("🔹 Processing data...")
         processed_df = pd.DataFrame({
             'Order ID': df['Consignee Name'].str.extract(r'(\d{7})')[0].fillna(''),
             'Tracking Number': df['Tracking ID'].fillna(''),
@@ -211,6 +249,13 @@ def main():
         
     except Exception as e:
         print(f"❌ Process failed: {str(e)}")
+    finally:
+        # Cleanup temporary file
+        if 'downloaded_file' in locals() and os.path.exists(downloaded_file):
+            try:
+                os.remove(downloaded_file)
+            except:
+                pass
 
 if __name__ == "__main__":
     main()
