@@ -41,6 +41,21 @@ def setup_chrome_driver():
     }
     chrome_options.add_experimental_option('prefs', prefs)
     
+    # Create Chrome driver instance
+    driver = webdriver.Chrome(options=chrome_options)
+    
+    return driver
+    
+    # Set download preferences
+    prefs = {
+        'download.default_directory': DOWNLOAD_FOLDER,
+        'download.prompt_for_download': False,
+        'download.directory_upgrade': True,
+        'safebrowsing.enabled': True,
+        'profile.default_content_settings.popups': 0
+    }
+    chrome_options.add_experimental_option('prefs', prefs)
+    
     # Set up Chrome service
     service = Service('/usr/local/bin/chromedriver')  # Use system-installed ChromeDriver
     return webdriver.Chrome(service=service, options=chrome_options)
