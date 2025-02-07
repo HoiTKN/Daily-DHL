@@ -30,7 +30,7 @@ def setup_chrome_driver():
         chrome_options.add_argument('--window-size=1920,1080')
         chrome_options.add_argument('--disable-extensions')
         chrome_options.add_argument('--disable-setuid-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--remote-debugging-port=9222')
         
         # Set download preferences
         prefs = {
@@ -41,8 +41,8 @@ def setup_chrome_driver():
         }
         chrome_options.add_experimental_option("prefs", prefs)
         
-        # Create driver with explicit service
-        service = Service(ChromeDriverManager().install())
+        # Use simple Service without webdriver_manager
+        service = Service("/usr/local/bin/chromedriver")
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
         # Set page load timeout
