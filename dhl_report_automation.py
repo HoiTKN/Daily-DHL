@@ -21,26 +21,41 @@ DOWNLOAD_FOLDER = os.getcwd()  # Use current directory for GitHub Actions
 
 def setup_chrome_driver():
     """Setup Chrome driver with necessary options for GitHub Actions"""
-    chrome_options = Options()
-    chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--window-size=1920,1080')
-    chrome_options.binary_location = "/usr/bin/google-chrome"  # Required for GitHub Actions
-    
-    # Configure download settings
-    chrome_options.add_experimental_option(
-        'prefs', {
+    try:
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+        
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--window-size=1920,1080')
+        
+        # Use environment variable for Chrome binary if available
+        chrome_path = os.environ.get('CHROME_PATH')
+        if chrome_path:
+            chrome_options.binary_location = chrome_path
+        
+        # Configure download settings
+        prefs = {
             'download.default_directory': DOWNLOAD_FOLDER,
             'download.prompt_for_download': False,
             'download.directory_upgrade': True,
             'safebrowsing.enabled': True
         }
-    )
-    
-    service = Service()
-    return webdriver.Chrome(service=service, options=chrome_options)
+        chrome_options.add_experimental_option('prefs', prefs)
+        
+        # Setup service with WebDriver Manager
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        print("✅ Chrome driver setup successful")
+        return driver
+        
+    except Exception as e:
+        print(f"❌ Chrome driver setup failed: {str(e)}")
+        raise
 
 def login_to_dhl(driver):
     """Login to DHL portal"""
