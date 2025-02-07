@@ -22,39 +22,46 @@ DOWNLOAD_FOLDER = os.getcwd()  # Use current directory for GitHub Actions
 def setup_chrome_driver():
     """Setup Chrome driver with necessary options for GitHub Actions"""
     try:
-        from selenium.webdriver.chrome.service import Service
-        from webdriver_manager.chrome import ChromeDriverManager
-        
         chrome_options = Options()
         chrome_options.add_argument('--headless')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-setuid-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
         
-        # Use environment variable for Chrome binary if available
-        chrome_path = os.environ.get('CHROME_PATH')
-        if chrome_path:
-            chrome_options.binary_location = chrome_path
-        
-        # Configure download settings
+        # Set download preferences
         prefs = {
-            'download.default_directory': DOWNLOAD_FOLDER,
-            'download.prompt_for_download': False,
-            'download.directory_upgrade': True,
-            'safebrowsing.enabled': True
+            "download.default_directory": DOWNLOAD_FOLDER,
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "safebrowsing.enabled": True
         }
-        chrome_options.add_experimental_option('prefs', prefs)
+        chrome_options.add_experimental_option("prefs", prefs)
         
-        # Setup service with WebDriver Manager
+        # Create driver with explicit service
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        # Set page load timeout
+        driver.set_page_load_timeout(30)
         
         print("✅ Chrome driver setup successful")
         return driver
         
     except Exception as e:
         print(f"❌ Chrome driver setup failed: {str(e)}")
+        print("Debug information:")
+        try:
+            import subprocess
+            chrome_version = subprocess.check_output(['google-chrome', '--version']).decode()
+            print(f"Chrome version: {chrome_version}")
+            chromedriver_version = subprocess.check_output(['chromedriver', '--version']).decode()
+            print(f"ChromeDriver version: {chromedriver_version}")
+        except Exception as debug_e:
+            print(f"Could not get version info: {str(debug_e)}")
         raise
 
 def login_to_dhl(driver):
