@@ -20,20 +20,14 @@ SERVICE_ACCOUNT_FILE = 'service_account.json'  # Will be created by GitHub Actio
 DOWNLOAD_FOLDER = os.getcwd()  # Use current directory for GitHub Actions
 
 def setup_chrome_driver():
-    """Setup Chrome driver with necessary options for GitHub Actions"""
+    """Setup Chrome driver with necessary options"""
     try:
-        from selenium.webdriver.chrome.service import Service
-        from webdriver_manager.chrome import ChromeDriverManager
-        
         chrome_options = Options()
         chrome_options.add_argument('--headless')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--disable-extensions')
-        chrome_options.add_argument('--disable-setuid-sandbox')
-        chrome_options.add_argument('--remote-debugging-port=9222')
         
         # Set download preferences
         prefs = {
@@ -44,13 +38,8 @@ def setup_chrome_driver():
         }
         chrome_options.add_experimental_option("prefs", prefs)
         
-        try:
-            # First try using webdriver_manager
-            service = Service(ChromeDriverManager().install())
-        except Exception as e:
-            print(f"⚠️ Fallback to system ChromeDriver: {str(e)}")
-            service = Service('/usr/local/bin/chromedriver')
-        
+        # Use the system installed ChromeDriver
+        service = Service('/usr/local/bin/chromedriver')
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.set_page_load_timeout(30)
         
@@ -62,9 +51,9 @@ def setup_chrome_driver():
         print("Debug information:")
         try:
             import subprocess
-            chrome_version = subprocess.check_output(['google-chrome', '--version']).decode()
+            chrome_version = subprocess.check_output(['google-chrome', '--version']).decode().strip()
             print(f"Chrome version: {chrome_version}")
-            chromedriver_version = subprocess.check_output(['chromedriver', '--version']).decode()
+            chromedriver_version = subprocess.check_output(['chromedriver', '--version']).decode().strip()
             print(f"ChromeDriver version: {chromedriver_version}")
         except Exception as debug_e:
             print(f"Could not get version info: {str(debug_e)}")
