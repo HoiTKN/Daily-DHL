@@ -17,33 +17,35 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Setup Chrome
-        uses: browser-actions/setup-chrome@latest
-        with:
-          chrome-version: stable
+      - name: Setup Selenium with Chrome
+        uses: nanasess/setup-chromedriver@v2
 
-      - name: Setup ChromeDriver
-        uses: browser-actions/setup-chrome@latest
-        with:
-          chrome-version: stable
-      
-      - name: Display Chrome version
+      - name: Install Chrome
         run: |
-          echo "Chrome version:"
-          ${{ env.CHROME_PATH }} --version
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Verify Chrome installation
+        run: |
+          google-chrome --version
+          chromedriver --version
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install webdriver_manager  # Add this specifically
 
       - name: Create service account file
         run: echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" > service_account.json
 
       - name: Run automation script
-        run: python dhl_report_automation.py
+        run: |
+          # Start ChromeDriver
+          chromedriver --port=4444 &
+          sleep 3  # Give ChromeDriver time to start
+          
+          # Run the script
+          python dhl_report_automation.py
         env:
           DHL_USERNAME: ${{ secrets.DHL_USERNAME }}
           DHL_PASSWORD: ${{ secrets.DHL_PASSWORD }}
-          CHROME_PATH: ${{ env.CHROME_PATH }}
