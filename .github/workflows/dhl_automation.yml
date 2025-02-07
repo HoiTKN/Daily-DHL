@@ -17,16 +17,15 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Setup Selenium with Chrome
+      - name: Setup Chrome and ChromeDriver
         uses: nanasess/setup-chromedriver@v2
+        with:
+          chromedriver-version: '132.0.6834.159'  # Match the version with installed Chrome
 
       - name: Install Chrome
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
-
-      - name: Verify Chrome installation
-        run: |
           google-chrome --version
           chromedriver --version
 
@@ -39,13 +38,8 @@ jobs:
         run: echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" > service_account.json
 
       - name: Run automation script
-        run: |
-          # Start ChromeDriver
-          chromedriver --port=4444 &
-          sleep 3  # Give ChromeDriver time to start
-          
-          # Run the script
-          python dhl_report_automation.py
+        run: python dhl_report_automation.py
         env:
           DHL_USERNAME: ${{ secrets.DHL_USERNAME }}
           DHL_PASSWORD: ${{ secrets.DHL_PASSWORD }}
+          PYTHONUNBUFFERED: 1  # This ensures Python prints output immediately
