@@ -26,15 +26,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
 
-      - name: Install ChromeDriver
+      - name: Setup ChromeDriver
+        uses: nanasess/setup-chromedriver@v2
+        with:
+          # Optional: specify a Chrome version
+          chromedriver-version: '121.0.6167.85'
+
+      - name: Start ChromeDriver
         run: |
-          CHROME_VERSION=$(google-chrome --version | cut -d ' ' -f3 | cut -d '.' -f1)
-          CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}")
-          curl -L -o chromedriver.zip "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
-          unzip chromedriver.zip
-          chmod +x chromedriver
-          sudo mv chromedriver /usr/local/bin/
           chromedriver --version
+          chrome --version
 
       - name: Install dependencies
         run: |
