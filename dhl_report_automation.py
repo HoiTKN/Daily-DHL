@@ -22,6 +22,9 @@ DOWNLOAD_FOLDER = os.getcwd()  # Use current directory for GitHub Actions
 def setup_chrome_driver():
     """Setup Chrome driver with necessary options for GitHub Actions"""
     try:
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+        
         chrome_options = Options()
         chrome_options.add_argument('--headless')
         chrome_options.add_argument('--no-sandbox')
@@ -41,11 +44,14 @@ def setup_chrome_driver():
         }
         chrome_options.add_experimental_option("prefs", prefs)
         
-        # Use simple Service without webdriver_manager
-        service = Service("/usr/local/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        try:
+            # First try using webdriver_manager
+            service = Service(ChromeDriverManager().install())
+        except Exception as e:
+            print(f"⚠️ Fallback to system ChromeDriver: {str(e)}")
+            service = Service('/usr/local/bin/chromedriver')
         
-        # Set page load timeout
+        driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.set_page_load_timeout(30)
         
         print("✅ Chrome driver setup successful")
@@ -63,7 +69,6 @@ def setup_chrome_driver():
         except Exception as debug_e:
             print(f"Could not get version info: {str(debug_e)}")
         raise
-
 def login_to_dhl(driver):
     """Login to DHL portal"""
     try:
