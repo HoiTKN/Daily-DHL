@@ -3,37 +3,40 @@ name: DHL Report Automation
 on:
   schedule:
     - cron: '0 1 * * *'  # 8:00 AM Vietnam time (UTC+7)
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      - name: Setup Chrome and ChromeDriver
-        uses: nanasess/setup-chromedriver@v2
-        with:
-          chromedriver-version: '132.0.6834.159'
-
       - name: Install Chrome
         run: |
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google.list
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
-          google-chrome --version
+
+      - name: Install ChromeDriver
+        run: |
+          CHROME_VERSION=$(google-chrome --version | cut -d " " -f3)
+          CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION%%.*}")
+          curl -L -o chromedriver.zip "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
+          unzip chromedriver.zip
+          chmod +x chromedriver
+          sudo mv chromedriver /usr/local/bin/
           chromedriver --version
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt
-          pip install --no-cache-dir webdriver_manager  # Explicitly install webdriver_manager
+          pip install -r requirements.txt
 
       - name: Create service account file
         run: echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" > service_account.json
@@ -43,4 +46,3 @@ jobs:
         env:
           DHL_USERNAME: ${{ secrets.DHL_USERNAME }}
           DHL_PASSWORD: ${{ secrets.DHL_PASSWORD }}
-          PYTHONUNBUFFERED: 1
