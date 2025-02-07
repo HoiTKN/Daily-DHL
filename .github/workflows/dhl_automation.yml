@@ -18,16 +18,6 @@ jobs:
 
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@latest
-        
-      - name: Setup ChromeDriver
-        uses: browser-actions/setup-chrome@latest
-        with:
-          driver-version: stable
-
-      - name: Check Chrome and ChromeDriver versions
-        run: |
-          chrome --version
-          chromedriver --version
 
       - name: Install dependencies
         run: |
