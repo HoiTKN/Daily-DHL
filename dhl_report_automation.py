@@ -22,6 +22,8 @@ DOWNLOAD_FOLDER = os.getcwd()  # Use current directory for GitHub Actions
 def setup_chrome_driver():
     """Setup Chrome driver with necessary options"""
     try:
+        from selenium.webdriver.chrome.service import Service
+        
         chrome_options = Options()
         chrome_options.add_argument('--headless')
         chrome_options.add_argument('--no-sandbox')
@@ -38,12 +40,30 @@ def setup_chrome_driver():
         }
         chrome_options.add_experimental_option("prefs", prefs)
         
-        # Use the system installed ChromeDriver
-        service = Service('/usr/local/bin/chromedriver')
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.set_page_load_timeout(30)
+        # Try different possible ChromeDriver locations
+        chromedriver_paths = [
+            'chromedriver',                    # System PATH
+            '/usr/local/bin/chromedriver',     # Common Linux location
+            '/usr/bin/chromedriver',           # Alternative Linux location
+        ]
         
-        print("✅ Chrome driver setup successful")
+        driver = None
+        last_error = None
+        
+        for driver_path in chromedriver_paths:
+            try:
+                service = Service(executable_path=driver_path)
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+                print(f"✅ Successfully initialized ChromeDriver from: {driver_path}")
+                break
+            except Exception as e:
+                last_error = e
+                continue
+        
+        if driver is None:
+            raise Exception(f"Could not initialize ChromeDriver. Last error: {last_error}")
+        
+        driver.set_page_load_timeout(30)
         return driver
         
     except Exception as e:
@@ -51,7 +71,7 @@ def setup_chrome_driver():
         print("Debug information:")
         try:
             import subprocess
-            chrome_version = subprocess.check_output(['google-chrome', '--version']).decode().strip()
+            chrome_version = subprocess.check_output(['chrome', '--version']).decode().strip()
             print(f"Chrome version: {chrome_version}")
             chromedriver_version = subprocess.check_output(['chromedriver', '--version']).decode().strip()
             print(f"ChromeDriver version: {chromedriver_version}")
