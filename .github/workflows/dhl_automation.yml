@@ -3,7 +3,7 @@ name: DHL Report Automation
 on:
   schedule:
     - cron: '0 1 * * *'  # 8:00 AM Vietnam time (UTC+7)
-  workflow_dispatch:
+  workflow_dispatch:  # For manual trigger
 
 jobs:
   run-automation:
@@ -26,7 +26,7 @@ jobs:
 
       - name: Create service account file
         run: |
-          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json  # Note the single quotes
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
 
       - name: Run automation script
         run: python dhl_report_automation.py
