@@ -519,6 +519,21 @@ def process_data(file_path):
             processed_df['Status'] = ''
             print("⚠️ Could not find Status column, using empty values")
         
+        # Sort the DataFrame by Pickup DateTime from newest to oldest before converting to string
+        # Create a temporary copy of the datetime column for sorting
+        processed_df['temp_sort'] = processed_df['Pickup DateTime']
+        
+        # Sort by Pickup DateTime in descending order (newest first)
+        try:
+            print("🔹 Sorting data by Pickup DateTime (newest to oldest)...")
+            processed_df = processed_df.sort_values(by='temp_sort', ascending=False)
+            print(f"✅ Successfully sorted {len(processed_df)} rows")
+        except Exception as sort_e:
+            print(f"⚠️ Warning: Could not sort by Pickup DateTime: {str(sort_e)}")
+        
+        # Remove the temporary sorting column
+        processed_df = processed_df.drop('temp_sort', axis=1)
+        
         # Convert datetime columns to string format
         processed_df['Pickup DateTime'] = processed_df['Pickup DateTime'].apply(
             lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(x) else '')
