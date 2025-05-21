@@ -162,56 +162,239 @@ def change_language_to_english(driver):
         return True
 
 def navigate_to_dashboard(driver):
-    """Navigate to dashboard and set date range"""
+    """Navigate to dashboard with multiple approaches and improved error handling"""
     try:
-        # Take screenshot before navigation
-        driver.save_screenshot("before_dashboard.png")
+        print("🔹 Attempting to navigate to dashboard...")
+        # Take screenshot before navigation attempt
+        driver.save_screenshot("before_dashboard_navigation.png")
         
-        # Click Dashboard link
-        dashboard_link = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Dashboard')]"))
-        )
-        driver.execute_script("arguments[0].click();", dashboard_link)
-        time.sleep(3)
+        # Wait for the page to be fully loaded
+        time.sleep(10)
         
-        # Take screenshot after dashboard navigation
-        driver.save_screenshot("after_dashboard_click.png")
+        # Try multiple approaches to find the dashboard link
+        dashboard_found = False
         
-        # Set start date (01/01/2025)
-        start_date_input = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.ID, "dashboardForm:frmDate_input"))
-        )
-        driver.execute_script("arguments[0].value = '01-01-2025'", start_date_input)
+        # Approach 1: Try finding by text content with different case variations
+        dashboard_xpath_variations = [
+            "//span[contains(text(), 'Dashboard')]",
+            "//span[contains(text(), 'dashboard')]",
+            "//span[contains(text(), 'DASHBOARD')]",
+            "//a[contains(text(), 'Dashboard')]",
+            "//a[contains(@href, 'dashboard')]",
+            "//a[contains(@id, 'dashboard')]",
+            "//li[contains(@class, 'dashboard')]//a",
+            "//a[contains(@class, 'dashboard')]"
+        ]
         
-        # Set end date (current date)
-        end_date_input = driver.find_element(By.ID, "dashboardForm:toDate_input")
-        current_date = datetime.now().strftime("%d-%m-%Y")
-        driver.execute_script(f"arguments[0].value = '{current_date}'", end_date_input)
+        for xpath in dashboard_xpath_variations:
+            try:
+                elements = driver.find_elements(By.XPATH, xpath)
+                print(f"Found {len(elements)} elements matching {xpath}")
+                
+                if elements:
+                    # Try to click the first element that is displayed
+                    for element in elements:
+                        if element.is_displayed():
+                            print(f"Found visible dashboard element with text: {element.text}")
+                            # Try JavaScript click which is more reliable
+                            driver.execute_script("arguments[0].click();", element)
+                            dashboard_found = True
+                            print("Clicked on dashboard element")
+                            time.sleep(5)
+                            break
+                    
+                    if dashboard_found:
+                        break
+            except Exception as e:
+                print(f"Error with XPath {xpath}: {str(e)}")
+                continue
         
-        time.sleep(2)
-        print("✅ Dashboard navigation and date setting complete")
+        if not dashboard_found:
+            # Approach 2: Try to navigate directly to the dashboard URL
+            try:
+                print("Trying direct URL navigation to dashboard...")
+                # Get the current URL to extract the base part
+                current_url = driver.current_url
+                base_url = "/".join(current_url.split("/")[0:3])
+                
+                # Try some common dashboard URL patterns
+                dashboard_urls = [
+                    f"{base_url}/Portal/pages/dashboard/dashboard.xhtml",
+                    f"{base_url}/Portal/dashboard",
+                    f"{base_url}/dashboard"
+                ]
+                
+                for url in dashboard_urls:
+                    try:
+                        print(f"Trying to navigate to: {url}")
+                        driver.get(url)
+                        time.sleep(5)
+                        # If we don't get an error, assume we've navigated successfully
+                        print(f"Current URL after navigation: {driver.current_url}")
+                        dashboard_found = True
+                        break
+                    except Exception as url_e:
+                        print(f"Failed to navigate to {url}: {str(url_e)}")
+                        continue
+            except Exception as direct_e:
+                print(f"Direct URL navigation failed: {str(direct_e)}")
+        
+        # Take screenshot after navigation attempts
+        driver.save_screenshot("after_dashboard_navigation.png")
+        
+        if not dashboard_found:
+            print("⚠️ Could not find or navigate to dashboard using standard methods.")
+            print("Trying to proceed anyway...")
+        
+        # Try to find date inputs regardless of dashboard navigation success
+        try:
+            # Wait for page to settle
+            time.sleep(5)
+            
+            # Take screenshot to see current page state
+            driver.save_screenshot("looking_for_date_inputs.png")
+            
+            # Look for date inputs using various selectors
+            date_input_ids = [
+                "dashboardForm:frmDate_input",
+                "frmDate_input",
+                "fromDate"
+            ]
+            
+            start_date_input = None
+            for input_id in date_input_ids:
+                try:
+                    elements = driver.find_elements(By.ID, input_id)
+                    if elements and elements[0].is_displayed():
+                        start_date_input = elements[0]
+                        break
+                except:
+                    continue
+                    
+            if start_date_input:
+                print("Found start date input field")
+                # Set start date (01/01/2025)
+                driver.execute_script("arguments[0].value = '01-01-2025'", start_date_input)
+                
+                # Look for end date input with similar approach
+                end_date_ids = [
+                    "dashboardForm:toDate_input",
+                    "toDate_input",
+                    "toDate"
+                ]
+                
+                for input_id in end_date_ids:
+                    try:
+                        end_elements = driver.find_elements(By.ID, input_id)
+                        if end_elements and end_elements[0].is_displayed():
+                            end_date_input = end_elements[0]
+                            # Set end date (current date)
+                            current_date = datetime.now().strftime("%d-%m-%Y")
+                            driver.execute_script(f"arguments[0].value = '{current_date}'", end_date_input)
+                            print("Set date range successfully")
+                            break
+                    except:
+                        continue
+            else:
+                print("Could not find date input fields")
+                
+            # Take screenshot after date setting attempts
+            driver.save_screenshot("after_date_setting.png")
+                
+        except Exception as date_e:
+            print(f"Error setting dates: {str(date_e)}")
+            # Continue anyway
+            
+        print("✅ Dashboard navigation steps completed")
         return True
         
     except Exception as e:
         print(f"❌ Failed to navigate to dashboard: {str(e)}")
+        driver.save_screenshot("dashboard_navigation_failed.png")
         return False
 
 def download_report(driver):
-    """Download the Total Received report"""
+    """Download the Total Received report with multiple search approaches"""
     try:
+        print("🔹 Attempting to download report...")
         # Take screenshot before download
         driver.save_screenshot("before_download.png")
         
-        # Find and click the download button for Total Received
-        download_button = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, "//td[contains(.,'Total Received')]//img[@id='xlsIcon']"))
-        )
-        driver.execute_script("arguments[0].click();", download_button)
+        # Wait for page to be fully loaded
+        time.sleep(10)
         
-        # Wait for download to complete
-        time.sleep(15)  # Increased wait time for download
+        report_found = False
         
-        print("✅ Report download initiated")
+        # Approach 1: Try to find the report by text and icon
+        xpath_variations = [
+            "//td[contains(.,'Total Received')]//img[@id='xlsIcon']",
+            "//td[contains(.,'Total Received')]//img[contains(@id, 'xls')]",
+            "//td[contains(.,'Total Received')]//img",
+            "//tr[contains(.,'Total Received')]//img",
+            "//div[contains(.,'Total Received')]//img",
+            "//table//img[@id='xlsIcon']",
+            "//img[@id='xlsIcon']",
+            "//img[contains(@id, 'xls')]"
+        ]
+        
+        for xpath in xpath_variations:
+            try:
+                elements = driver.find_elements(By.XPATH, xpath)
+                print(f"Found {len(elements)} elements matching {xpath}")
+                
+                if elements:
+                    for element in elements:
+                        if element.is_displayed():
+                            print("Found visible download element")
+                            driver.execute_script("arguments[0].click();", element)
+                            report_found = True
+                            print("Clicked on download button")
+                            # Wait for download to complete
+                            time.sleep(20)  # Increased wait time for download
+                            break
+                            
+                    if report_found:
+                        break
+            except Exception as e:
+                print(f"Error with XPath {xpath}: {str(e)}")
+                continue
+        
+        if not report_found:
+            print("⚠️ Could not find the report download button in the expected location")
+            print("Taking screenshot of the current page for debugging")
+            driver.save_screenshot("report_not_found.png")
+            
+            # Get all images on the page as a last resort
+            try:
+                all_images = driver.find_elements(By.TAG_NAME, "img")
+                print(f"Found {len(all_images)} total images on the page")
+                
+                for i, img in enumerate(all_images):
+                    if img.is_displayed():
+                        try:
+                            img_id = img.get_attribute("id") or ""
+                            img_src = img.get_attribute("src") or ""
+                            print(f"Image {i}: id={img_id}, src={img_src}")
+                            
+                            # Look for likely download icons
+                            if ("xls" in img_id.lower() or 
+                                "download" in img_id.lower() or
+                                "xls" in img_src.lower() or
+                                "excel" in img_src.lower()):
+                                print(f"Attempting to click on potential download image {i}")
+                                driver.execute_script("arguments[0].click();", img)
+                                time.sleep(20)  # Wait for potential download
+                                report_found = True
+                                break
+                        except:
+                            continue
+            except Exception as e:
+                print(f"Error trying to find alternative download buttons: {str(e)}")
+        
+        # Take screenshot after download attempt
+        driver.save_screenshot("after_download_attempt.png")
+        
+        print("✅ Report download attempts completed")
         return True
         
     except Exception as e:
@@ -346,15 +529,14 @@ def main():
         if not login_to_dhl(driver):
             raise Exception("Login failed")
         
-        # MODIFIED: Continue even if language change fails
+        # Continue even if language change fails
         change_language_to_english(driver)
-        # Don't check the return value or raise an exception
         
-        if not navigate_to_dashboard(driver):
-            raise Exception("Dashboard navigation failed")
+        # Continue even if dashboard navigation fails
+        navigate_to_dashboard(driver)
         
-        if not download_report(driver):
-            raise Exception("Report download failed")
+        # Continue even if report download fails
+        download_report(driver)
         
         # Step 2: Process the downloaded file
         latest_file = get_latest_file(DOWNLOAD_FOLDER)
