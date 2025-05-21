@@ -82,7 +82,7 @@ def login_to_dhl(driver):
     """Login to DHL portal"""
     try:
         print("🔹 Accessing DHL portal...")
-        driver.get("https://ecommerceportal.dhl.com/Portal/pages/customer/statisticsdashboard.xhtml")
+        driver.get("https://ecommerceportal.dhl.com/Portal/pages/login/userlogin.xhtml")
         
         # Wait for and fill in login credentials
         username_input = WebDriverWait(driver, 10).until(
