@@ -78,6 +78,7 @@ def setup_chrome_driver():
         except Exception as debug_e:
             print(f"Could not get version info: {str(debug_e)}")
         raise
+
 def login_to_dhl(driver):
     """Login to DHL portal"""
     try:
@@ -98,6 +99,10 @@ def login_to_dhl(driver):
         
         # Wait for login to complete
         time.sleep(5)
+        
+        # Take screenshot for debugging
+        driver.save_screenshot("after_login.png")
+        
         print("✅ Login successful!")
         return True
         
@@ -106,39 +111,74 @@ def login_to_dhl(driver):
         return False
 
 def change_language_to_english(driver):
-    """Change portal language to English"""
+    """Change portal language to English with improved error handling"""
     try:
-        # Wait for language selector and click
-        language_selector = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "j_idt19:j_idt21_label"))
-        )
-        driver.execute_script("arguments[0].click();", language_selector)
+        print("🔹 Attempting to change language to English...")
         
-        # Select English option
-        time.sleep(2)
-        english_option = driver.find_element(By.XPATH, "//li[text()='English']")
-        driver.execute_script("arguments[0].click();", english_option)
-        
-        time.sleep(2)
-        print("✅ Language changed to English")
-        return True
+        # Try different approaches to find the language selector
+        try:
+            # First wait for page to fully load
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'ui-selectonemenu')]"))
+            )
+            
+            # Take a screenshot for debugging
+            driver.save_screenshot("page_before_language.png")
+            
+            # Approach 1: Try to find by any language selector by class
+            selectors = driver.find_elements(By.XPATH, "//div[contains(@class, 'ui-selectonemenu')]//label")
+            if selectors:
+                print(f"Found {len(selectors)} potential language selectors")
+                for i, selector in enumerate(selectors):
+                    print(f"Selector {i}: {selector.text}")
+                    if 'language' in selector.get_attribute('class').lower() or i == 0:
+                        driver.execute_script("arguments[0].click();", selector)
+                        break
+            
+            time.sleep(3)
+            
+            # Look for English in the dropdown that appeared
+            english_options = driver.find_elements(By.XPATH, "//li[contains(text(), 'English')]")
+            if english_options:
+                driver.execute_script("arguments[0].click();", english_options[0])
+                print("Selected English option")
+            else:
+                print("English option not found in dropdown")
+            
+            time.sleep(3)
+            print("✅ Language change attempted")
+            return True
+            
+        except Exception as inner_e:
+            print(f"⚠️ First approach failed: {str(inner_e)}")
+            
+            # Approach 2: Try a more general approach - skip language change
+            print("Skipping language change and continuing with script...")
+            return True
         
     except Exception as e:
-        print(f"❌ Failed to change language: {str(e)}")
-        return False
+        print(f"❌ All language change approaches failed: {str(e)}")
+        # Return true to continue with script despite language error
+        return True
 
 def navigate_to_dashboard(driver):
     """Navigate to dashboard and set date range"""
     try:
+        # Take screenshot before navigation
+        driver.save_screenshot("before_dashboard.png")
+        
         # Click Dashboard link
-        dashboard_link = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'Dashboard')]"))
+        dashboard_link = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Dashboard')]"))
         )
         driver.execute_script("arguments[0].click();", dashboard_link)
-        time.sleep(2)
+        time.sleep(3)
+        
+        # Take screenshot after dashboard navigation
+        driver.save_screenshot("after_dashboard_click.png")
         
         # Set start date (01/01/2025)
-        start_date_input = WebDriverWait(driver, 10).until(
+        start_date_input = WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.ID, "dashboardForm:frmDate_input"))
         )
         driver.execute_script("arguments[0].value = '01-01-2025'", start_date_input)
@@ -159,14 +199,17 @@ def navigate_to_dashboard(driver):
 def download_report(driver):
     """Download the Total Received report"""
     try:
+        # Take screenshot before download
+        driver.save_screenshot("before_download.png")
+        
         # Find and click the download button for Total Received
-        download_button = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, "//td[contains(.,'Total Received')]//img[@id='xlsIcon']"))
+        download_button = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.XPATH, "//td[contains(.,'Total Received')]//img[@id='xlsIcon']"))
         )
         driver.execute_script("arguments[0].click();", download_button)
         
         # Wait for download to complete
-        time.sleep(10)  # Increased wait time for download
+        time.sleep(15)  # Increased wait time for download
         
         print("✅ Report download initiated")
         return True
@@ -303,8 +346,9 @@ def main():
         if not login_to_dhl(driver):
             raise Exception("Login failed")
         
-        if not change_language_to_english(driver):
-            raise Exception("Language change failed")
+        # MODIFIED: Continue even if language change fails
+        change_language_to_english(driver)
+        # Don't check the return value or raise an exception
         
         if not navigate_to_dashboard(driver):
             raise Exception("Dashboard navigation failed")
