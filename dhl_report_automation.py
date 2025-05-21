@@ -91,7 +91,7 @@ def login_to_dhl(driver):
         username_input.send_keys(os.environ.get('DHL_USERNAME', 'truongcongdai4@gmail.com'))
         
         password_input = driver.find_element(By.NAME, "j_password")
-        password_input.send_keys(os.environ.get('DHL_PASSWORD', 'Levelup@123'))
+        password_input.send_keys(os.environ.get('DHL_PASSWORD', '@Thavi035@'))
         
         login_button = driver.find_element(By.CLASS_NAME, "btn-login")
         login_button.click()
