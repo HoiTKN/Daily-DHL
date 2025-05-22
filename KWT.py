@@ -307,7 +307,7 @@ def set_dates_and_download(driver):
             print("✅ Clicked Load button")
             
             # Wait for loading to complete
-            time.sleep(15)  # Give time for data to load
+            time.sleep(100)  # Give time for data to load
             driver.save_screenshot("after_load.png")
         except Exception as e:
             print(f"⚠️ Error clicking Load button: {str(e)}")
