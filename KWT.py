@@ -20,6 +20,7 @@ SERVICE_ACCOUNT_FILE = 'service_account.json'  # Will be created by GitHub Actio
 DOWNLOAD_FOLDER = os.getcwd()  # Use current directory for GitHub Actions
 DEFAULT_TIMEOUT = 30  # Default timeout
 PAGE_LOAD_TIMEOUT = 60  # Page load timeout
+IMPLICIT_WAIT = 10  # Implicit wait time
 
 def setup_chrome_driver():
     """Setup Chrome driver with necessary options"""
@@ -32,6 +33,13 @@ def setup_chrome_driver():
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        
+        # Additional options for stability
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-infobars')
+        chrome_options.add_argument('--ignore-certificate-errors')
         
         # Cookie handling - essential for session management
         chrome_options.add_argument("--enable-cookies")
@@ -44,6 +52,8 @@ def setup_chrome_driver():
             "safebrowsing.enabled": True
         }
         chrome_options.add_experimental_option("prefs", prefs)
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
         
         # Try different possible ChromeDriver locations
         chromedriver_paths = [
@@ -69,6 +79,10 @@ def setup_chrome_driver():
             raise Exception(f"Could not initialize ChromeDriver. Last error: {last_error}")
         
         driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+        
+        # Execute script to remove webdriver flag
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         return driver
         
     except Exception as e:
@@ -89,46 +103,127 @@ def login_to_postaplus(driver):
     try:
         print("🔹 Accessing PostaPlus portal...")
         driver.get("https://etrack.postaplus.net/CustomerPortal/Login.aspx")
-        driver.delete_all_cookies()  # Clear cookies before login
         
-        # Wait for and fill in login credentials
-        username_input = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-            EC.presence_of_element_located((By.ID, "txtusername"))
-        )
+        # Wait for page to load completely
+        time.sleep(5)
+        
+        # Take screenshot to see what page we're on
+        driver.save_screenshot("login_page_loaded.png")
+        print(f"Current URL: {driver.current_url}")
+        print(f"Page title: {driver.title}")
+        
+        # Clear cookies after page load
+        driver.delete_all_cookies()
+        
+        # Try multiple approaches to find username field
+        username_input = None
+        try:
+            # First try by ID
+            username_input = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "txtusername"))
+            )
+            print("✅ Found username field by ID")
+        except:
+            try:
+                # Try by name attribute
+                username_input = driver.find_element(By.NAME, "txtusername")
+                print("✅ Found username field by name")
+            except:
+                try:
+                    # Try by placeholder
+                    username_input = driver.find_element(By.XPATH, "//input[@placeholder='User ID']")
+                    print("✅ Found username field by placeholder")
+                except:
+                    print("❌ Could not find username field")
+                    # Log page source for debugging
+                    with open("page_source.html", "w", encoding="utf-8") as f:
+                        f.write(driver.page_source)
+                    raise Exception("Username field not found")
+        
+        # Fill username
         username_input.clear()
         username_input.send_keys("CR25005121")
+        print("✅ Entered username")
         
-        # Wait for password field
-        password_input = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-            EC.presence_of_element_located((By.ID, "txtpass"))
-        )
+        # Find password field
+        password_input = None
+        try:
+            password_input = driver.find_element(By.ID, "txtpass")
+            print("✅ Found password field by ID")
+        except:
+            try:
+                password_input = driver.find_element(By.NAME, "txtpass")
+                print("✅ Found password field by name")
+            except:
+                password_input = driver.find_element(By.XPATH, "//input[@placeholder='Password']")
+                print("✅ Found password field by placeholder")
+        
+        # Fill password
         password_input.clear()
         password_input.send_keys("levelupvn@1234")
+        print("✅ Entered password")
         
         # Take screenshot before login
         driver.save_screenshot("before_login.png")
         
-        # Wait for login button and click
-        login_button = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-            EC.element_to_be_clickable((By.ID, "btnLogin"))
-        )
+        # Find and click login button
+        login_button = None
+        try:
+            login_button = driver.find_element(By.ID, "btnLogin")
+            print("✅ Found login button by ID")
+        except:
+            try:
+                login_button = driver.find_element(By.NAME, "btnLogin")
+                print("✅ Found login button by name")
+            except:
+                login_button = driver.find_element(By.XPATH, "//input[@value='Login']")
+                print("✅ Found login button by value")
+        
+        # Click login button using JavaScript
         driver.execute_script("arguments[0].click();", login_button)
+        print("✅ Clicked login button")
         
         # Wait for login to complete
         time.sleep(10)
+        
+        # Check if login was successful by looking for URL change or login elements
+        current_url = driver.current_url
+        if "login" not in current_url.lower() or current_url != "https://etrack.postaplus.net/CustomerPortal/Login.aspx":
+            print("✅ Login appears successful - URL changed")
+        else:
+            print("⚠️ Still on login page, checking for error messages")
+            # Check for any error messages
+            error_elements = driver.find_elements(By.XPATH, "//span[contains(@class, 'error')] | //div[contains(@class, 'error')] | //label[contains(@class, 'error')]")
+            if error_elements:
+                for elem in error_elements:
+                    if elem.text:
+                        print(f"Error message found: {elem.text}")
         
         # Take screenshot after login
         driver.save_screenshot("after_login.png")
         
         # Display the current URL after login
         print(f"Current URL after login: {driver.current_url}")
+        print(f"Page title after login: {driver.title}")
         
         print("✅ Login steps completed!")
         return True
         
     except Exception as e:
         print(f"❌ Login failed: {str(e)}")
+        print(f"Error type: {type(e).__name__}")
         driver.save_screenshot("login_failed.png")
+        
+        # Additional debugging info
+        try:
+            print(f"Current URL at failure: {driver.current_url}")
+            print(f"Page title at failure: {driver.title}")
+            # Save page source for debugging
+            with open("error_page_source.html", "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+        except:
+            pass
+            
         return False
 
 def navigate_to_reports(driver):
@@ -407,6 +502,7 @@ def main():
         
         # Step 1: Setup and login
         driver = setup_chrome_driver()
+        driver.implicitly_wait(IMPLICIT_WAIT)  # Add implicit wait
         
         if not login_to_postaplus(driver):
             print("⚠️ Login failed, but continuing with empty data...")
