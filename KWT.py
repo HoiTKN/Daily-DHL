@@ -16,6 +16,9 @@ import requests
 from urllib.parse import urljoin
 import json
 import base64
+from bs4 import BeautifulSoup
+import io
+import magic  # For file type detection
 
 # Constants
 GOOGLE_SHEET_ID = "1bxu6NWsG5dbYzhNsn5-bZUM6K6jB5-XpcNPGHUq1HJs"
@@ -506,6 +509,181 @@ def get_latest_file(folder_path, max_attempts=10, delay=5):
     print("  4. Download requires additional interaction (popup, etc.)")
     return None
 
+def check_file_type(file_path):
+    """Check the actual MIME type of the file"""
+    try:
+        # Install python-magic if not already installed
+        try:
+            import magic
+        except ImportError:
+            import subprocess
+            subprocess.check_call(["pip", "install", "python-magic"])
+            import magic
+        
+        # Check file MIME type
+        mime = magic.Magic(mime=True)
+        file_type = mime.from_file(file_path)
+        print(f"Detected file type: {file_type}")
+        
+        # Check if it's HTML
+        if "html" in file_type.lower() or "text" in file_type.lower():
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read(1000)  # Read first 1000 chars
+                if "<html" in content.lower() or "<!doctype html" in content.lower():
+                    print("⚠️ File appears to be HTML, not Excel")
+                    return "html"
+        
+        # Check if it's Excel
+        if "excel" in file_type.lower() or "spreadsheet" in file_type.lower() or "office" in file_type.lower():
+            return "excel"
+            
+        # Check if it's CSV
+        if "csv" in file_type.lower() or "text/plain" in file_type.lower():
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read(100)
+                if "," in content and "\n" in content:
+                    return "csv"
+        
+        return "unknown"
+    except Exception as e:
+        print(f"⚠️ Error checking file type: {str(e)}")
+        # Fallback to simple extension check
+        if file_path.lower().endswith('.csv'):
+            return "csv"
+        elif file_path.lower().endswith(('.xlsx', '.xls')):
+            return "excel"
+        elif file_path.lower().endswith(('.html', '.htm')):
+            return "html"
+        return "unknown"
+
+def extract_table_from_html(file_path):
+    """Extract data from HTML table"""
+    try:
+        print("🔍 Extracting data from HTML file...")
+        
+        # Read the HTML file
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            html_content = f.read()
+        
+        # Parse HTML
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Look for tables - try to find the data table
+        tables = soup.find_all('table')
+        print(f"Found {len(tables)} tables in HTML")
+        
+        # Find the largest table which is likely our data table
+        largest_table = None
+        max_rows = 0
+        
+        for table in tables:
+            rows = table.find_all('tr')
+            if len(rows) > max_rows:
+                max_rows = len(rows)
+                largest_table = table
+        
+        if largest_table and max_rows > 1:  # Ensure it has more than just a header row
+            print(f"Using largest table with {max_rows} rows")
+            
+            # Extract headers
+            headers = []
+            header_row = largest_table.find('tr')
+            if header_row:
+                for th in header_row.find_all(['th', 'td']):
+                    headers.append(th.get_text().strip())
+            
+            # If no headers found, use default column names
+            if not headers:
+                headers = ['Column' + str(i) for i in range(1, 20)]  # Default column names
+            
+            # Extract data rows
+            data = []
+            rows = largest_table.find_all('tr')
+            for row in rows[1:]:  # Skip header row
+                row_data = {}
+                cells = row.find_all(['td', 'th'])
+                for i, cell in enumerate(cells):
+                    if i < len(headers):
+                        row_data[headers[i]] = cell.get_text().strip()
+                    else:
+                        row_data[f'Column{i+1}'] = cell.get_text().strip()
+                data.append(row_data)
+            
+            # Create DataFrame
+            if data:
+                df = pd.DataFrame(data)
+                
+                # Map columns to expected format if possible
+                expected_columns = ['Airway Bill', 'Create Date', 'Reference 1', 'Last Event', 
+                                  'Last Event Date', 'Calling Status', 'Cash/Cod Amt']
+                
+                # Try to map columns by similar names
+                column_mapping = {}
+                for expected_col in expected_columns:
+                    best_match = None
+                    for df_col in df.columns:
+                        # Look for exact match first
+                        if df_col.lower() == expected_col.lower():
+                            best_match = df_col
+                            break
+                        # Then look for partial match
+                        elif expected_col.lower() in df_col.lower() or df_col.lower() in expected_col.lower():
+                            best_match = df_col
+                    
+                    if best_match:
+                        column_mapping[best_match] = expected_col
+                
+                # Apply mapping if any found
+                if column_mapping:
+                    df = df.rename(columns=column_mapping)
+                
+                # Add missing expected columns
+                for col in expected_columns:
+                    if col not in df.columns:
+                        df[col] = ''
+                
+                print(f"✅ Successfully extracted {len(df)} rows from HTML table")
+                return df
+        
+        # If we couldn't extract data from tables, try other methods
+        # Look for potential grid or data structure in divs or other elements
+        grid_data = []
+        grid_headers = []
+        
+        # Try to find grid headers
+        header_elems = soup.select('.grid-header, .header, th, .column-header')
+        if header_elems:
+            for elem in header_elems:
+                text = elem.get_text().strip()
+                if text:
+                    grid_headers.append(text)
+        
+        # Try to find grid rows
+        row_elems = soup.select('.grid-row, .row, tr, .data-row')
+        for row in row_elems:
+            cells = row.select('td, .cell, .grid-cell')
+            if cells:
+                row_data = {}
+                for i, cell in enumerate(cells):
+                    if i < len(grid_headers):
+                        col_name = grid_headers[i]
+                    else:
+                        col_name = f'Column{i+1}'
+                    row_data[col_name] = cell.get_text().strip()
+                grid_data.append(row_data)
+        
+        if grid_data:
+            df = pd.DataFrame(grid_data)
+            print(f"✅ Extracted {len(df)} rows from grid-like structure")
+            return df
+        
+        print("❌ Could not extract data from HTML")
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error extracting data from HTML: {str(e)}")
+        return None
+
 def enhanced_download_method(driver):
     """Enhanced method to capture and download report data"""
     try:
@@ -631,218 +809,31 @@ def enhanced_download_method(driver):
                 print(f"Response content type: {content_type}")
                 print(f"Content-Disposition: {content_disp}")
                 
-                # If it's an Excel file or the content length is substantial
-                if ('excel' in content_type.lower() or 
-                    'csv' in content_type.lower() or 
-                    'octet-stream' in content_type.lower() or
-                    'attachment' in content_disp.lower() or
-                    len(response.content) > 5000):
-                    
-                    # Determine filename
-                    filename = "postaplus_report.xlsx"
-                    if 'filename=' in content_disp:
-                        filename = content_disp.split('filename=')[1].strip('"\'')
-                    else:
-                        if 'csv' in content_type.lower():
-                            filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                        else:
-                            filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                    
-                    # Save the file
-                    filepath = os.path.join(DOWNLOAD_FOLDER, filename)
-                    with open(filepath, 'wb') as f:
-                        f.write(response.content)
-                    
-                    print(f"✅ Saved file: {filepath}")
-                    return filepath
-                else:
-                    # If we didn't get a file, save the response for debugging
-                    with open("form_submission_response.html", "wb") as f:
-                        f.write(response.content)
-                    print("Response saved to form_submission_response.html")
+                # Save the response content for analysis and processing
+                filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                filepath = os.path.join(DOWNLOAD_FOLDER, filename)
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+                
+                print(f"✅ Saved file: {filepath}")
+                return filepath
         except Exception as e:
             print(f"Form direct submission failed: {str(e)}")
         
-        # Try alternative URL patterns
-        try:
-            print("Trying alternative URL patterns...")
-            session = requests.Session()
-            
-            # Get cookies from browser
-            cookies = driver.get_cookies()
-            for cookie in cookies:
-                session.cookies.set(cookie['name'], cookie['value'])
-            
-            # Base URL and patterns to try
-            base_url = "https://etrack.postaplus.net"
-            patterns = [
-                "/CustomerPortal/ExportToExcel.aspx",
-                "/CustomerPortal/DownloadReport.aspx",
-                "/CustomerPortal/Export.aspx",
-                "/CustomerPortal/ReportExport.aspx",
-                "/CustomerPortal/ExportData.aspx",
-                "/CustomerPortal/Handler/ExportHandler.ashx",
-                "/CustomerPortal/Export.ashx"
-            ]
-            
-            for pattern in patterns:
-                try:
-                    export_url = urljoin(base_url, pattern)
-                    print(f"Trying URL: {export_url}")
-                    
-                    # Create form data with required ASP.NET parameters
-                    post_data = {
-                        '__VIEWSTATE': viewstate,
-                        '__EVENTVALIDATION': eventvalidation,
-                    }
-                    
-                    # Try different variations of the export button parameter
-                    variations = [
-                        "ctl00$ContentPlaceHolder1$btnexport",
-                        "btnexport",
-                        "Export",
-                        "export"
-                    ]
-                    
-                    for var in variations:
-                        post_data[var] = "Export"
-                    
-                    # Try to download
-                    response = session.post(export_url, data=post_data, headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Referer': form_action
-                    })
-                    
-                    if response.status_code == 200 and len(response.content) > 5000:
-                        # Determine filename
-                        filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                        
-                        # Save the file
-                        filepath = os.path.join(DOWNLOAD_FOLDER, filename)
-                        with open(filepath, 'wb') as f:
-                            f.write(response.content)
-                        
-                        print(f"✅ Downloaded from alternative URL: {filepath}")
-                        return filepath
-                except Exception as e:
-                    print(f"Error with pattern {pattern}: {str(e)}")
-            
-        except Exception as e:
-            print(f"Alternative URL patterns failed: {str(e)}")
-        
-        # Try direct browser download using JavaScript 
-        try:
-            print("Trying direct browser download via JavaScript...")
-            
-            # JavaScript to handle download
-            download_script = """
-            // Function to encode data for download
-            function downloadAsExcel(jsonData, filename) {
-                const headerRow = Object.keys(jsonData[0]);
-                const rows = jsonData.map(obj => Object.values(obj));
-                
-                // Create CSV content
-                let csvContent = headerRow.join(',') + '\\n';
-                rows.forEach(row => {
-                    csvContent += row.join(',') + '\\n';
-                });
-                
-                // Create download link
-                const encodedUri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
-                const link = document.createElement('a');
-                link.setAttribute('href', encodedUri);
-                link.setAttribute('download', filename);
-                document.body.appendChild(link);
-                
-                // Trigger download
-                link.click();
-                document.body.removeChild(link);
-                return 'Download initiated';
-            }
-            
-            // Get table data if available
-            const tableData = [];
-            const table = document.querySelector('table');
-            if (table) {
-                const headers = Array.from(table.querySelectorAll('th')).map(th => th.textContent.trim());
-                const rows = table.querySelectorAll('tr');
-                
-                rows.forEach((row, rowIndex) => {
-                    if (rowIndex === 0) return; // Skip header row
-                    
-                    const cells = row.querySelectorAll('td');
-                    if (cells.length > 0) {
-                        const rowData = {};
-                        cells.forEach((cell, cellIndex) => {
-                            if (cellIndex < headers.length) {
-                                rowData[headers[cellIndex]] = cell.textContent.trim();
-                            }
-                        });
-                        tableData.push(rowData);
-                    }
-                });
-                
-                if (tableData.length > 0) {
-                    return downloadAsExcel(tableData, 'postaplus_report.csv');
-                } else {
-                    return 'No table data found';
-                }
-            } else {
-                return 'No table found on page';
-            }
-            """
-            
-            result = driver.execute_script(download_script)
-            print(f"JavaScript download result: {result}")
-            time.sleep(10)  # Wait for download to complete
-            
-        except Exception as e:
-            print(f"JavaScript download failed: {str(e)}")
-        
-        # Final attempt: try to scrape data directly from the page
+        # Scrape data directly from the page if available
         try:
             print("Attempting to scrape data directly from the page...")
             
-            # Get table data
-            table_data = driver.execute_script("""
-                const table = document.querySelector('table');
-                if (!table) return null;
-                
-                const headers = Array.from(table.querySelectorAll('th')).map(th => th.textContent.trim());
-                const rows = Array.from(table.querySelectorAll('tr')).slice(1);  // Skip header row
-                
-                const data = [];
-                rows.forEach(row => {
-                    const cells = Array.from(row.querySelectorAll('td'));
-                    if (cells.length > 0) {
-                        const rowData = {};
-                        cells.forEach((cell, index) => {
-                            if (index < headers.length) {
-                                rowData[headers[index]] = cell.textContent.trim();
-                            }
-                        });
-                        data.push(rowData);
-                    }
-                });
-                
-                return {headers, data};
-            """)
+            # Save the current page as HTML
+            html_filepath = os.path.join(DOWNLOAD_FOLDER, f"postaplus_page_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
+            with open(html_filepath, 'w', encoding='utf-8') as f:
+                f.write(driver.page_source)
             
-            if table_data and table_data['data'] and len(table_data['data']) > 0:
-                # Convert to DataFrame
-                df = pd.DataFrame(table_data['data'])
-                
-                # Save to CSV
-                filename = f"postaplus_report_scraped_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                filepath = os.path.join(DOWNLOAD_FOLDER, filename)
-                df.to_csv(filepath, index=False)
-                
-                print(f"✅ Scraped data saved to {filepath}")
-                return filepath
-            else:
-                print("No table data found to scrape")
+            print(f"✅ Saved current page HTML to: {html_filepath}")
+            return html_filepath
+            
         except Exception as e:
-            print(f"Data scraping failed: {str(e)}")
+            print(f"❌ Failed to save page HTML: {str(e)}")
         
         return None
         
@@ -871,14 +862,89 @@ def process_data(file_path):
         if file_path is None:
             print("⚠️ No file to process, returning empty DataFrame")
             return create_empty_data()
-            
+        
         time.sleep(2)
         
-        # Read the file
-        if file_path.endswith('.csv'):
-            df = pd.read_csv(file_path)
+        # Check file type first
+        file_type = check_file_type(file_path)
+        print(f"Detected file type: {file_type}")
+        
+        # Process based on file type
+        if file_type == "html":
+            # Extract data from HTML
+            df = extract_table_from_html(file_path)
+            if df is not None and not df.empty:
+                print(f"✅ Successfully extracted data from HTML: {len(df)} rows")
+                return df
+            else:
+                print("⚠️ Could not extract data from HTML, returning empty DataFrame")
+                return create_empty_data()
+                
+        elif file_type == "csv":
+            # Process CSV file
+            try:
+                df = pd.read_csv(file_path)
+                print(f"✅ Read CSV file: {len(df)} rows")
+            except Exception as e:
+                print(f"❌ Error reading CSV: {str(e)}")
+                # Try with different encoding
+                try:
+                    df = pd.read_csv(file_path, encoding='latin1')
+                    print(f"✅ Read CSV file with latin1 encoding: {len(df)} rows")
+                except Exception as e2:
+                    print(f"❌ Error reading CSV with latin1 encoding: {str(e2)}")
+                    return create_empty_data()
+        
+        elif file_type == "excel":
+            # Process Excel file
+            try:
+                df = pd.read_excel(file_path)
+                print(f"✅ Read Excel file: {len(df)} rows")
+            except Exception as e:
+                print(f"❌ Error reading Excel file: {str(e)}")
+                try:
+                    # Try with engine specification
+                    df = pd.read_excel(file_path, engine='openpyxl')
+                    print(f"✅ Read Excel file with openpyxl engine: {len(df)} rows")
+                except Exception as e2:
+                    print(f"❌ Error reading Excel with openpyxl: {str(e2)}")
+                    # Final attempt with xlrd
+                    try:
+                        df = pd.read_excel(file_path, engine='xlrd')
+                        print(f"✅ Read Excel file with xlrd engine: {len(df)} rows")
+                    except Exception as e3:
+                        print(f"❌ Error reading Excel with xlrd: {str(e3)}")
+                        return create_empty_data()
         else:
-            df = pd.read_excel(file_path)
+            # Unknown file type - try to read as text and look for tabular data
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                
+                # Check if it's HTML even if not detected earlier
+                if "<html" in content.lower() or "<!doctype html" in content.lower():
+                    print("⚠️ File appears to be HTML, attempting to extract tables...")
+                    with open(file_path + ".html", 'w', encoding='utf-8') as f:
+                        f.write(content)
+                    df = extract_table_from_html(file_path + ".html")
+                    if df is not None and not df.empty:
+                        return df
+                
+                # Check if it might be CSV
+                if "," in content and "\n" in content:
+                    print("⚠️ File might be CSV, attempting to parse...")
+                    try:
+                        df = pd.read_csv(io.StringIO(content))
+                        print(f"✅ Parsed as CSV: {len(df)} rows")
+                        return df
+                    except:
+                        pass
+                
+                print("⚠️ Could not determine file format, returning empty DataFrame")
+                return create_empty_data()
+            except Exception as e:
+                print(f"❌ Error processing unknown file type: {str(e)}")
+                return create_empty_data()
         
         # Print column names to help debug
         print(f"Columns in file: {df.columns.tolist()}")
@@ -983,6 +1049,13 @@ def main():
     try:
         print("🚀 Starting PostaPlus report automation process...")
         
+        # Install required packages
+        try:
+            import pip
+            pip.main(['install', 'beautifulsoup4', 'python-magic', 'openpyxl'])
+        except Exception as e:
+            print(f"⚠️ Warning: Couldn't install packages: {str(e)}")
+        
         # Step 1: Setup and login
         driver = setup_chrome_driver()
         driver.implicitly_wait(IMPLICIT_WAIT)  # Add implicit wait
@@ -1011,8 +1084,16 @@ def main():
             if latest_file:
                 processed_df = process_data(latest_file)
             else:
-                print("⚠️ No files were downloaded, using empty data structure")
-                processed_df = create_empty_data()
+                # Try to get table data directly from the page
+                print("⚠️ No files were downloaded, trying to scrape from current page...")
+                html_path = os.path.join(DOWNLOAD_FOLDER, "current_page.html")
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write(driver.page_source)
+                processed_df = extract_table_from_html(html_path)
+                
+                if processed_df is None or processed_df.empty:
+                    print("⚠️ No data found on page, using empty data structure")
+                    processed_df = create_empty_data()
         except Exception as e:
             print(f"⚠️ Error in file processing: {str(e)}")
             processed_df = create_empty_data()
