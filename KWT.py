@@ -18,7 +18,7 @@ import json
 import base64
 from bs4 import BeautifulSoup
 import io
-import magic  # For file type detection
+import re
 
 # Constants
 GOOGLE_SHEET_ID = "1bxu6NWsG5dbYzhNsn5-bZUM6K6jB5-XpcNPGHUq1HJs"
@@ -28,6 +28,17 @@ DOWNLOAD_FOLDER = os.getcwd()  # Use current directory for GitHub Actions
 DEFAULT_TIMEOUT = 30  # Default timeout
 PAGE_LOAD_TIMEOUT = 60  # Page load timeout
 IMPLICIT_WAIT = 10  # Implicit wait time
+
+# Required columns with possible variations in names
+REQUIRED_COLUMNS = {
+    'Airway Bill': ['airway bill', 'awb', 'awb no', 'awb number', 'airwaybill', 'air waybill', 'shipment number', 'shipment', 'awbno'],
+    'Create Date': ['create date', 'created date', 'date created', 'creation date', 'booking date', 'pickup date', 'ship date'],
+    'Reference 1': ['reference 1', 'ref 1', 'reference', 'ref', 'customer reference', 'cust ref', 'ref no 1', 'refno1'],
+    'Last Event': ['last event', 'status', 'current status', 'last status', 'delivery status', 'event'],
+    'Last Event Date': ['last event date', 'status date', 'event date', 'last status date', 'last update', 'update date'],
+    'Calling Status': ['calling status', 'call status', 'notification status', 'notification', 'contact status'],
+    'Cash/Cod Amt': ['cash/cod amt', 'cod amount', 'cash amount', 'cod value', 'cod', 'cash/cod', 'cod amt', 'cash on delivery']
+}
 
 def setup_chrome_driver():
     """Setup Chrome driver with necessary options"""
@@ -510,41 +521,47 @@ def get_latest_file(folder_path, max_attempts=10, delay=5):
     return None
 
 def check_file_type(file_path):
-    """Check the actual MIME type of the file"""
+    """Check the actual content type of the file"""
     try:
-        # Install python-magic if not already installed
-        try:
-            import magic
-        except ImportError:
-            import subprocess
-            subprocess.check_call(["pip", "install", "python-magic"])
-            import magic
-        
-        # Check file MIME type
-        mime = magic.Magic(mime=True)
-        file_type = mime.from_file(file_path)
-        print(f"Detected file type: {file_type}")
-        
+        # Check file type based on content
+        with open(file_path, 'rb') as f:
+            header = f.read(2000)  # Read first 2000 bytes for MIME detection
+            
         # Check if it's HTML
-        if "html" in file_type.lower() or "text" in file_type.lower():
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read(1000)  # Read first 1000 chars
-                if "<html" in content.lower() or "<!doctype html" in content.lower():
-                    print("⚠️ File appears to be HTML, not Excel")
-                    return "html"
+        if b'<html' in header.lower() or b'<!doctype html' in header.lower():
+            print("⚠️ File appears to be HTML, not Excel")
+            return "html"
         
-        # Check if it's Excel
-        if "excel" in file_type.lower() or "spreadsheet" in file_type.lower() or "office" in file_type.lower():
+        # Check if it's Excel (XLSX)
+        if header.startswith(b'PK'):
+            return "excel"
+            
+        # Check if it's Excel (XLS)
+        if header.startswith(b'\xd0\xcf\x11\xe0'):
             return "excel"
             
         # Check if it's CSV
-        if "csv" in file_type.lower() or "text/plain" in file_type.lower():
+        try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read(100)
-                if "," in content and "\n" in content:
-                    return "csv"
-        
+                content = f.read(500)
+                if ',' in content and '\n' in content:
+                    # Check if it has consistent number of commas per line
+                    lines = content.split('\n')[:5]  # First 5 lines
+                    if all(line.count(',') == lines[0].count(',') for line in lines[1:] if line):
+                        return "csv"
+        except:
+            pass
+            
+        # Fall back to extension-based detection
+        if file_path.lower().endswith('.csv'):
+            return "csv"
+        elif file_path.lower().endswith(('.xlsx', '.xls')):
+            return "excel"
+        elif file_path.lower().endswith(('.html', '.htm')):
+            return "html"
+            
         return "unknown"
+        
     except Exception as e:
         print(f"⚠️ Error checking file type: {str(e)}")
         # Fallback to simple extension check
@@ -556,8 +573,43 @@ def check_file_type(file_path):
             return "html"
         return "unknown"
 
+def clean_column_name(col_name):
+    """Clean column name for better matching"""
+    if not col_name:
+        return ""
+    # Remove special chars and convert to lowercase
+    clean = re.sub(r'[^a-zA-Z0-9\s]', '', col_name).lower().strip()
+    # Replace multiple spaces with a single space
+    clean = re.sub(r'\s+', ' ', clean)
+    return clean
+
+def find_best_match_column(df_columns, target_column):
+    """Find the best matching column in the DataFrame for a required column"""
+    # Get possible variations for this column
+    variations = REQUIRED_COLUMNS.get(target_column, [target_column.lower()])
+    
+    # First try exact match
+    for col in df_columns:
+        if clean_column_name(col) == target_column.lower():
+            return col
+    
+    # Then try variations
+    for var in variations:
+        for col in df_columns:
+            if clean_column_name(col) == var:
+                return col
+    
+    # Then try partial match
+    for var in variations:
+        for col in df_columns:
+            if var in clean_column_name(col) or clean_column_name(col) in var:
+                return col
+    
+    # If no match found, return None
+    return None
+
 def extract_table_from_html(file_path):
-    """Extract data from HTML table"""
+    """Extract data from HTML table with specific column handling"""
     try:
         print("🔍 Extracting data from HTML file...")
         
@@ -613,76 +665,82 @@ def extract_table_from_html(file_path):
             if data:
                 df = pd.DataFrame(data)
                 
-                # Map columns to expected format if possible
-                expected_columns = ['Airway Bill', 'Create Date', 'Reference 1', 'Last Event', 
-                                  'Last Event Date', 'Calling Status', 'Cash/Cod Amt']
+                # Print the column names for debugging
+                print(f"Original columns: {df.columns.tolist()}")
                 
-                # Try to map columns by similar names
-                column_mapping = {}
-                for expected_col in expected_columns:
-                    best_match = None
-                    for df_col in df.columns:
-                        # Look for exact match first
-                        if df_col.lower() == expected_col.lower():
-                            best_match = df_col
-                            break
-                        # Then look for partial match
-                        elif expected_col.lower() in df_col.lower() or df_col.lower() in expected_col.lower():
-                            best_match = df_col
-                    
-                    if best_match:
-                        column_mapping[best_match] = expected_col
+                # STEP 1: Map columns to expected format
+                processed_df = pd.DataFrame()
                 
-                # Apply mapping if any found
-                if column_mapping:
-                    df = df.rename(columns=column_mapping)
-                
-                # Add missing expected columns
-                for col in expected_columns:
-                    if col not in df.columns:
-                        df[col] = ''
-                
-                print(f"✅ Successfully extracted {len(df)} rows from HTML table")
-                return df
-        
-        # If we couldn't extract data from tables, try other methods
-        # Look for potential grid or data structure in divs or other elements
-        grid_data = []
-        grid_headers = []
-        
-        # Try to find grid headers
-        header_elems = soup.select('.grid-header, .header, th, .column-header')
-        if header_elems:
-            for elem in header_elems:
-                text = elem.get_text().strip()
-                if text:
-                    grid_headers.append(text)
-        
-        # Try to find grid rows
-        row_elems = soup.select('.grid-row, .row, tr, .data-row')
-        for row in row_elems:
-            cells = row.select('td, .cell, .grid-cell')
-            if cells:
-                row_data = {}
-                for i, cell in enumerate(cells):
-                    if i < len(grid_headers):
-                        col_name = grid_headers[i]
+                # Map each required column if possible
+                for required_col in REQUIRED_COLUMNS.keys():
+                    found_col = find_best_match_column(df.columns, required_col)
+                    if found_col:
+                        processed_df[required_col] = df[found_col]
+                        print(f"✅ Mapped '{found_col}' to '{required_col}'")
                     else:
-                        col_name = f'Column{i+1}'
-                    row_data[col_name] = cell.get_text().strip()
-                grid_data.append(row_data)
+                        print(f"⚠️ Could not find match for '{required_col}', using empty values")
+                        processed_df[required_col] = ''
+                
+                # STEP 2: Convert Airway Bill column to string
+                if 'Airway Bill' in processed_df.columns:
+                    processed_df['Airway Bill'] = processed_df['Airway Bill'].astype(str)
+                    print("✅ Converted 'Airway Bill' column to text type")
+                
+                print(f"✅ Successfully extracted {len(processed_df)} rows from HTML table")
+                return processed_df
         
-        if grid_data:
-            df = pd.DataFrame(grid_data)
-            print(f"✅ Extracted {len(df)} rows from grid-like structure")
-            return df
+        # If we couldn't extract data from tables, try looking for grid structure in other elements
+        print("⚠️ No suitable table found, looking for grid-like structure...")
+        grid_divs = soup.select('.grid, .table, .data-grid')
+        
+        if grid_divs:
+            for grid in grid_divs:
+                # Try to extract header and rows
+                header_divs = grid.select('.header, .column-header, .grid-header')
+                row_divs = grid.select('.row, .grid-row, .data-row')
+                
+                if header_divs and row_divs:
+                    # Extract headers
+                    headers = [h.get_text().strip() for h in header_divs]
+                    
+                    # Extract rows
+                    data = []
+                    for row in row_divs:
+                        cells = row.select('.cell, .grid-cell, .data-cell')
+                        if cells:
+                            row_data = {}
+                            for i, cell in enumerate(cells):
+                                if i < len(headers):
+                                    row_data[headers[i]] = cell.get_text().strip()
+                                else:
+                                    row_data[f'Column{i+1}'] = cell.get_text().strip()
+                            data.append(row_data)
+                    
+                    if data:
+                        df = pd.DataFrame(data)
+                        
+                        # Apply the same processing as for table data
+                        processed_df = pd.DataFrame()
+                        
+                        for required_col in REQUIRED_COLUMNS.keys():
+                            found_col = find_best_match_column(df.columns, required_col)
+                            if found_col:
+                                processed_df[required_col] = df[found_col]
+                            else:
+                                processed_df[required_col] = ''
+                        
+                        if 'Airway Bill' in processed_df.columns:
+                            processed_df['Airway Bill'] = processed_df['Airway Bill'].astype(str)
+                        
+                        print(f"✅ Extracted {len(processed_df)} rows from grid-like structure")
+                        return processed_df
         
         print("❌ Could not extract data from HTML")
-        return None
+        return create_empty_data()
         
     except Exception as e:
         print(f"❌ Error extracting data from HTML: {str(e)}")
-        return None
+        return create_empty_data()
 
 def enhanced_download_method(driver):
     """Enhanced method to capture and download report data"""
@@ -874,7 +932,6 @@ def process_data(file_path):
             # Extract data from HTML
             df = extract_table_from_html(file_path)
             if df is not None and not df.empty:
-                print(f"✅ Successfully extracted data from HTML: {len(df)} rows")
                 return df
             else:
                 print("⚠️ Could not extract data from HTML, returning empty DataFrame")
@@ -916,75 +973,41 @@ def process_data(file_path):
                         print(f"❌ Error reading Excel with xlrd: {str(e3)}")
                         return create_empty_data()
         else:
-            # Unknown file type - try to read as text and look for tabular data
+            # Unknown file type - try to read as text and check for HTML content
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
+                    content = f.read(2000)  # Read first 2000 chars
                 
-                # Check if it's HTML even if not detected earlier
                 if "<html" in content.lower() or "<!doctype html" in content.lower():
                     print("⚠️ File appears to be HTML, attempting to extract tables...")
-                    with open(file_path + ".html", 'w', encoding='utf-8') as f:
-                        f.write(content)
-                    df = extract_table_from_html(file_path + ".html")
-                    if df is not None and not df.empty:
-                        return df
-                
-                # Check if it might be CSV
-                if "," in content and "\n" in content:
-                    print("⚠️ File might be CSV, attempting to parse...")
-                    try:
-                        df = pd.read_csv(io.StringIO(content))
-                        print(f"✅ Parsed as CSV: {len(df)} rows")
-                        return df
-                    except:
-                        pass
-                
-                print("⚠️ Could not determine file format, returning empty DataFrame")
-                return create_empty_data()
+                    return extract_table_from_html(file_path)
+                else:
+                    print("⚠️ Unknown file type, returning empty DataFrame")
+                    return create_empty_data()
             except Exception as e:
-                print(f"❌ Error processing unknown file type: {str(e)}")
+                print(f"❌ Error reading unknown file type: {str(e)}")
                 return create_empty_data()
         
         # Print column names to help debug
-        print(f"Columns in file: {df.columns.tolist()}")
-        
-        # Create a list of columns to keep
-        columns_to_keep = ['Airway Bill', 'Create Date', 'Reference 1', 'Last Event', 
-                          'Last Event Date', 'Calling Status', 'Cash/Cod Amt']
+        print(f"Original columns: {df.columns.tolist()}")
         
         # Create processed dataframe with only required columns
         processed_df = pd.DataFrame()
         
-        for col in columns_to_keep:
-            if col in df.columns:
-                processed_df[col] = df[col]
+        # Map each required column if possible
+        for required_col in REQUIRED_COLUMNS.keys():
+            found_col = find_best_match_column(df.columns, required_col)
+            if found_col:
+                processed_df[required_col] = df[found_col]
+                print(f"✅ Mapped '{found_col}' to '{required_col}'")
             else:
-                # Try to find similar column names (case-insensitive)
-                found = False
-                for df_col in df.columns:
-                    if col.lower() == df_col.lower():
-                        processed_df[col] = df[df_col]
-                        found = True
-                        break
-                if not found:
-                    print(f"⚠️ Column '{col}' not found, using empty values")
-                    processed_df[col] = ''
+                print(f"⚠️ Could not find match for '{required_col}', using empty values")
+                processed_df[required_col] = ''
         
         # Convert Airway Bill column to text type (string)
         if 'Airway Bill' in processed_df.columns:
             processed_df['Airway Bill'] = processed_df['Airway Bill'].astype(str)
-        
-        # Sort by Create Date (newest first) if it exists
-        if 'Create Date' in processed_df.columns and processed_df['Create Date'].notna().any():
-            try:
-                # Try to convert to datetime for sorting
-                processed_df['temp_date'] = pd.to_datetime(processed_df['Create Date'], errors='coerce')
-                processed_df = processed_df.sort_values(by='temp_date', ascending=False)
-                processed_df = processed_df.drop('temp_date', axis=1)
-                print("✅ Sorted data by Create Date (newest first)")
-            except Exception as sort_e:
-                print(f"⚠️ Could not sort by Create Date: {str(sort_e)}")
+            print("✅ Converted 'Airway Bill' column to text type")
         
         # Replace any NaN values with empty strings
         processed_df = processed_df.fillna('')
@@ -1052,7 +1075,7 @@ def main():
         # Install required packages
         try:
             import pip
-            pip.main(['install', 'beautifulsoup4', 'python-magic', 'openpyxl'])
+            pip.main(['install', 'beautifulsoup4', 'openpyxl'])
         except Exception as e:
             print(f"⚠️ Warning: Couldn't install packages: {str(e)}")
         
