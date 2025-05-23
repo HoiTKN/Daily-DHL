@@ -26,9 +26,6 @@ DEFAULT_TIMEOUT = 30  # Default timeout
 PAGE_LOAD_TIMEOUT = 60  # Page load timeout
 IMPLICIT_WAIT = 10  # Implicit wait time
 
-# Global tracking for network requests
-network_requests = []
-
 def setup_chrome_driver():
     """Setup Chrome driver with necessary options"""
     try:
@@ -69,7 +66,7 @@ def setup_chrome_driver():
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
         # Enable browser logging
-        chrome_options.set_capability('goog:loggingPrefs', {'browser': 'ALL', 'performance': 'ALL'})
+        chrome_options.set_capability('goog:loggingPrefs', {'browser': 'ALL'})
         
         # Try different possible ChromeDriver locations
         chromedriver_paths = [
@@ -100,13 +97,14 @@ def setup_chrome_driver():
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         # CRITICAL: Enable Chrome DevTools Protocol for headless downloads
-        driver.execute_cdp_cmd("Page.setDownloadBehavior", {
-            "behavior": "allow",
-            "downloadPath": DOWNLOAD_FOLDER
-        })
-        
-        # ENHANCEMENT: Setup network request monitoring
-        setup_network_monitoring(driver)
+        try:
+            driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+                "behavior": "allow",
+                "downloadPath": DOWNLOAD_FOLDER
+            })
+        except Exception as e:
+            # Ignore CDP errors - will use alternative methods
+            print(f"Note: CDP command failed, will use alternative download methods: {str(e)}")
         
         print(f"✅ Download directory set to: {DOWNLOAD_FOLDER}")
         
@@ -124,19 +122,6 @@ def setup_chrome_driver():
         except Exception as debug_e:
             print(f"Could not get version info: {str(debug_e)}")
         raise
-
-def setup_network_monitoring(driver):
-    """Setup network monitoring to track requests and downloads"""
-    global network_requests
-    network_requests = []
-    
-    # Enable network monitoring
-    driver.execute_cdp_cmd("Network.enable", {})
-    
-    # Add event listener for responseReceived
-    driver.execute_cdp_cmd("Network.responseReceived", {})
-    
-    print("✅ Network monitoring enabled")
 
 def login_to_postaplus(driver):
     """Login to PostaPlus portal"""
