@@ -540,7 +540,52 @@ def get_latest_file(folder_path, max_attempts=10, delay=5):
                     f.endswith('.XLSX') or
                     f.endswith('.XLS') or
                     f.endswith('.CSV')
-                ) and not f.startswith('~
+                ) and not f.startswith('~'):  # Ignore temporary Excel files
+                    # Check if file was created in the last 5 minutes
+                    file_time = os.path.getctime(file_path)
+                    current_time = time.time()
+                    if current_time - file_time < 300:  # 5 minutes
+                        files.append(file_path)
+                        print(f"Found recent file: {f} (created {int(current_time - file_time)} seconds ago)")
+            
+            if not files:
+                print(f"No matching recent files found. Attempt {attempt + 1}/{max_attempts}")
+                print(f"Waiting {delay} seconds before retry...")
+                time.sleep(delay)
+                continue
+                
+            latest_file = max(files, key=os.path.getctime)
+            
+            # Check if file can be opened (not still being written)
+            try:
+                with open(latest_file, 'rb') as f:
+                    # Try to read first few bytes to ensure file is complete
+                    f.read(100)
+            except:
+                print(f"File {latest_file} is still being written, waiting...")
+                time.sleep(delay)
+                continue
+                
+            print(f"✅ Found latest file: {latest_file}")
+            return latest_file
+            
+        except (PermissionError, FileNotFoundError) as e:
+            print(f"⚠️ Attempt {attempt + 1}: File access error: {str(e)}")
+            if attempt < max_attempts - 1:
+                print(f"Waiting {delay} seconds before retry...")
+                time.sleep(delay)
+            else:
+                print("Could not access the report file after multiple attempts")
+                return None
+    
+    # If we get here, no file was found after all attempts
+    print("❌ No downloaded file found after all attempts")
+    print("Possible reasons:")
+    print("  1. Download was blocked by the website")
+    print("  2. File is downloading to a different location")
+    print("  3. File has an unexpected extension")
+    print("  4. Download requires additional interaction (popup, etc.)")
+    return None
 
 def alternative_download_method(driver, max_wait=30):
     """Alternative method to download file by intercepting network requests"""
@@ -630,302 +675,6 @@ def alternative_download_method(driver, max_wait=30):
                     continue
         except Exception as e:
             print(f"Error constructing download URL: {str(e)}")
-        
-        # If no direct download links, try to capture the export URL from the export button
-        try:
-            export_button = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnexport")
-            onclick = export_button.get_attribute('onclick')
-            print(f"Export button onclick: {onclick}")
-            
-            # Try to find form action
-            form = driver.find_element(By.XPATH, "//form")
-            form_action = form.get_attribute('action')
-            print(f"Form action: {form_action}")
-        except:
-            pass
-        
-        return None
-        
-    except Exception as e:
-        print(f"❌ Alternative download method failed: {str(e)}")
-        return None
-    """Create an empty DataFrame if no data is available"""
-    print("⚠️ Creating empty data structure as fallback")
-    return pd.DataFrame({
-        'Airway Bill': [],
-        'Create Date': [],
-        'Reference 1': [],
-        'Last Event': [],
-        'Last Event Date': [],
-        'Calling Status': [],
-        'Cash/Cod Amt': []
-    })
-
-def process_data(file_path):
-    """Process the downloaded PostaPlus report"""
-    print(f"🔹 Processing file: {file_path}")
-    
-    try:
-        if file_path is None:
-            print("⚠️ No file to process, returning empty DataFrame")
-            return create_empty_data()
-            
-        time.sleep(2)
-        
-        # Read the file
-        if file_path.endswith('.csv'):
-            df = pd.read_csv(file_path)
-        else:
-            df = pd.read_excel(file_path)
-        
-        # Print column names to help debug
-        print(f"Columns in file: {df.columns.tolist()}")
-        
-        # Create a list of columns to keep
-        columns_to_keep = ['Airway Bill', 'Create Date', 'Reference 1', 'Last Event', 
-                          'Last Event Date', 'Calling Status', 'Cash/Cod Amt']
-        
-        # Create processed dataframe with only required columns
-        processed_df = pd.DataFrame()
-        
-        for col in columns_to_keep:
-            if col in df.columns:
-                processed_df[col] = df[col]
-            else:
-                # Try to find similar column names (case-insensitive)
-                found = False
-                for df_col in df.columns:
-                    if col.lower() == df_col.lower():
-                        processed_df[col] = df[df_col]
-                        found = True
-                        break
-                if not found:
-                    print(f"⚠️ Column '{col}' not found, using empty values")
-                    processed_df[col] = ''
-        
-        # Convert Airway Bill column to text type (string)
-        if 'Airway Bill' in processed_df.columns:
-            processed_df['Airway Bill'] = processed_df['Airway Bill'].astype(str)
-        
-        # Sort by Create Date (newest first) if it exists
-        if 'Create Date' in processed_df.columns and processed_df['Create Date'].notna().any():
-            try:
-                # Try to convert to datetime for sorting
-                processed_df['temp_date'] = pd.to_datetime(processed_df['Create Date'], errors='coerce')
-                processed_df = processed_df.sort_values(by='temp_date', ascending=False)
-                processed_df = processed_df.drop('temp_date', axis=1)
-                print("✅ Sorted data by Create Date (newest first)")
-            except Exception as sort_e:
-                print(f"⚠️ Could not sort by Create Date: {str(sort_e)}")
-        
-        # Replace any NaN values with empty strings
-        processed_df = processed_df.fillna('')
-        
-        print(f"✅ Data processing completed successfully - {len(processed_df)} rows")
-        return processed_df
-        
-    except Exception as e:
-        print(f"❌ Error processing data: {str(e)}")
-        return create_empty_data()
-
-def upload_to_google_sheets(df):
-    """Upload processed data to Google Sheets"""
-    print("🔹 Preparing to upload to Google Sheets...")
-    
-    try:
-        print("🔹 Authenticating with Google Sheets...")
-        creds = Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
-        service = build("sheets", "v4", credentials=creds)
-        
-        print("🔹 Preparing data for upload...")
-        headers = df.columns.tolist()
-        data = df.astype(str).values.tolist()
-        values = [headers] + data
-        
-        print("🔹 Clearing existing content...")
-        try:
-            service.spreadsheets().values().clear(
-                spreadsheetId=GOOGLE_SHEET_ID,
-                range=f"{SHEET_NAME}!A1:Z1000"
-            ).execute()
-        except Exception as e:
-            print(f"⚠️ Warning: Could not clear sheet: {str(e)}")
-        
-        print("🔹 Uploading new data...")
-        body = {
-            'values': values
-        }
-        
-        response = service.spreadsheets().values().update(
-            spreadsheetId=GOOGLE_SHEET_ID,
-            range=f"{SHEET_NAME}!A1",
-            valueInputOption="USER_ENTERED",
-            body=body
-        ).execute()
-        
-        print("✅ Data uploaded successfully to Google Sheets")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error uploading to Google Sheets: {str(e)}")
-        print("Debug information:")
-        print(f"Sheet ID: {GOOGLE_SHEET_ID}")
-        print(f"Sheet Name: {SHEET_NAME}")
-        raise
-
-def main():
-    driver = None
-    try:
-        print("🚀 Starting PostaPlus report automation process...")
-        
-        # Step 1: Setup and login
-        driver = setup_chrome_driver()
-        driver.implicitly_wait(IMPLICIT_WAIT)  # Add implicit wait
-        
-        if not login_to_postaplus(driver):
-            print("⚠️ Login failed, but continuing with empty data...")
-            upload_to_google_sheets(create_empty_data())
-            print("🎉 Process completed with empty data")
-            return
-        
-        # Step 2: Navigate to reports
-        navigate_to_reports(driver)
-        
-        # Step 3: Set dates and download report
-        set_dates_and_download(driver)
-        
-        # Step 4: Process the downloaded file
-        try:
-            latest_file = get_latest_file(DOWNLOAD_FOLDER)
-            
-            # If no file found, try alternative download method
-            if not latest_file:
-                print("⚠️ Regular download failed, trying alternative method...")
-                latest_file = alternative_download_method(driver)
-            
-            # If still no file, try extracting data from page
-            if not latest_file:
-                print("⚠️ Alternative download failed, trying to extract data from page...")
-                latest_file = extract_data_from_page(driver)
-            
-            if latest_file:
-                processed_df = process_data(latest_file)
-            else:
-                print("⚠️ No files were downloaded, using empty data structure")
-                processed_df = create_empty_data()
-        except Exception as e:
-            print(f"⚠️ Error in file processing: {str(e)}")
-            processed_df = create_empty_data()
-        
-        # Step 5: Upload to Google Sheets
-        upload_to_google_sheets(processed_df)
-        
-        print("🎉 Complete process finished successfully!")
-        
-    except Exception as e:
-        print(f"❌ Process failed: {str(e)}")
-        try:
-            # Try to upload empty data even if process fails
-            upload_to_google_sheets(create_empty_data())
-            print("⚠️ Uploaded empty data after process failure")
-        except Exception as upload_e:
-            print(f"❌ Failed to upload empty data: {str(upload_e)}")
-    
-    finally:
-        if driver:
-            driver.quit()
-
-if __name__ == "__main__":
-    main()
-):  # Ignore temporary Excel files
-                    # Check if file was created in the last 5 minutes
-                    file_time = os.path.getctime(file_path)
-                    current_time = time.time()
-                    if current_time - file_time < 300:  # 5 minutes
-                        files.append(file_path)
-                        print(f"Found recent file: {f} (created {int(current_time - file_time)} seconds ago)")
-            
-            if not files:
-                print(f"No matching recent files found. Attempt {attempt + 1}/{max_attempts}")
-                print(f"Waiting {delay} seconds before retry...")
-                time.sleep(delay)
-                continue
-                
-            latest_file = max(files, key=os.path.getctime)
-            
-            # Check if file can be opened (not still being written)
-            try:
-                with open(latest_file, 'rb') as f:
-                    # Try to read first few bytes to ensure file is complete
-                    f.read(100)
-            except:
-                print(f"File {latest_file} is still being written, waiting...")
-                time.sleep(delay)
-                continue
-                
-            print(f"✅ Found latest file: {latest_file}")
-            return latest_file
-            
-        except (PermissionError, FileNotFoundError) as e:
-            print(f"⚠️ Attempt {attempt + 1}: File access error: {str(e)}")
-            if attempt < max_attempts - 1:
-                print(f"Waiting {delay} seconds before retry...")
-                time.sleep(delay)
-            else:
-                print("Could not access the report file after multiple attempts")
-                return None
-    
-    # If we get here, no file was found after all attempts
-    print("❌ No downloaded file found after all attempts")
-    print("Possible reasons:")
-    print("  1. Download was blocked by the website")
-    print("  2. File is downloading to a different location")
-    print("  3. File has an unexpected extension")
-    print("  4. Download requires additional interaction (popup, etc.)")
-    return None
-
-def alternative_download_method(driver, max_wait=30):
-    """Alternative method to download file by intercepting network requests"""
-    try:
-        print("🔄 Trying alternative download method...")
-        
-        # Get cookies from the current session
-        cookies = driver.get_cookies()
-        session = requests.Session()
-        
-        # Add cookies to requests session
-        for cookie in cookies:
-            session.cookies.set(cookie['name'], cookie['value'])
-        
-        # Get current page URL for reference
-        current_url = driver.current_url
-        base_url = "https://etrack.postaplus.net"
-        
-        # Look for download links in the page
-        download_links = driver.find_elements(By.XPATH, "//a[contains(@href, 'export') or contains(@href, 'download') or contains(@href, 'excel')]")
-        
-        if download_links:
-            for link in download_links:
-                href = link.get_attribute('href')
-                if href:
-                    print(f"Found potential download link: {href}")
-                    # Try to download using requests
-                    try:
-                        full_url = urljoin(base_url, href) if not href.startswith('http') else href
-                        response = session.get(full_url, timeout=30)
-                        if response.status_code == 200 and len(response.content) > 1000:
-                            # Save the file
-                            filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                            filepath = os.path.join(DOWNLOAD_FOLDER, filename)
-                            with open(filepath, 'wb') as f:
-                                f.write(response.content)
-                            print(f"✅ Downloaded file using alternative method: {filename}")
-                            return filepath
-                    except Exception as e:
-                        print(f"Failed to download from {href}: {str(e)}")
         
         # If no direct download links, try to capture the export URL from the export button
         try:
@@ -1098,6 +847,12 @@ def main():
         # Step 4: Process the downloaded file
         try:
             latest_file = get_latest_file(DOWNLOAD_FOLDER)
+            
+            # If no file found, try alternative download method
+            if not latest_file:
+                print("⚠️ Regular download failed, trying alternative method...")
+                latest_file = alternative_download_method(driver)
+            
             if latest_file:
                 processed_df = process_data(latest_file)
             else:
