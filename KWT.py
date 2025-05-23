@@ -14,6 +14,8 @@ import time
 import numpy as np
 import requests
 from urllib.parse import urljoin
+import json
+import base64
 
 # Constants
 GOOGLE_SHEET_ID = "1bxu6NWsG5dbYzhNsn5-bZUM6K6jB5-XpcNPGHUq1HJs"
@@ -23,6 +25,9 @@ DOWNLOAD_FOLDER = os.getcwd()  # Use current directory for GitHub Actions
 DEFAULT_TIMEOUT = 30  # Default timeout
 PAGE_LOAD_TIMEOUT = 60  # Page load timeout
 IMPLICIT_WAIT = 10  # Implicit wait time
+
+# Global tracking for network requests
+network_requests = []
 
 def setup_chrome_driver():
     """Setup Chrome driver with necessary options"""
@@ -38,6 +43,9 @@ def setup_chrome_driver():
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
+        # ENHANCED: Improved download handling
+        chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+        
         # Additional options for stability
         chrome_options.add_argument('--disable-extensions')
         chrome_options.add_argument('--disable-infobars')
@@ -46,21 +54,22 @@ def setup_chrome_driver():
         # Cookie handling - essential for session management
         chrome_options.add_argument("--enable-cookies")
         
-        # CRITICAL: Enable Chrome DevTools Protocol for headless downloads
+        # CRITICAL: Enhanced preferences for downloads
         chrome_options.add_experimental_option("prefs", {
             "download.default_directory": DOWNLOAD_FOLDER,
             "download.prompt_for_download": False,
             "download.directory_upgrade": True,
             "safebrowsing.enabled": True,
             "safebrowsing.disable_download_protection": True,
-            "download.extensions_to_open": "applications/pdf",
-            "plugins.always_open_pdf_externally": True
+            "download.extensions_to_open": "",
+            "plugins.always_open_pdf_externally": True,
+            "browser.helperApps.neverAsk.saveToDisk": "application/vnd.ms-excel,application/msexcel,application/x-msexcel,application/x-ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,text/csv"
         })
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
         # Enable browser logging
-        chrome_options.set_capability('goog:loggingPrefs', {'browser': 'ALL'})
+        chrome_options.set_capability('goog:loggingPrefs', {'browser': 'ALL', 'performance': 'ALL'})
         
         # Try different possible ChromeDriver locations
         chromedriver_paths = [
@@ -96,6 +105,9 @@ def setup_chrome_driver():
             "downloadPath": DOWNLOAD_FOLDER
         })
         
+        # ENHANCEMENT: Setup network request monitoring
+        setup_network_monitoring(driver)
+        
         print(f"✅ Download directory set to: {DOWNLOAD_FOLDER}")
         
         return driver
@@ -112,6 +124,19 @@ def setup_chrome_driver():
         except Exception as debug_e:
             print(f"Could not get version info: {str(debug_e)}")
         raise
+
+def setup_network_monitoring(driver):
+    """Setup network monitoring to track requests and downloads"""
+    global network_requests
+    network_requests = []
+    
+    # Enable network monitoring
+    driver.execute_cdp_cmd("Network.enable", {})
+    
+    # Add event listener for responseReceived
+    driver.execute_cdp_cmd("Network.responseReceived", {})
+    
+    print("✅ Network monitoring enabled")
 
 def login_to_postaplus(driver):
     """Login to PostaPlus portal"""
@@ -283,25 +308,6 @@ def navigate_to_reports(driver):
         print(f"❌ Failed to navigate to reports: {str(e)}")
         return False
 
-def capture_network_download(driver):
-    """Enable network capture to intercept download requests"""
-    try:
-        print("🔍 Enabling network capture for download interception...")
-        
-        # Enable Chrome DevTools Protocol
-        driver.execute_cdp_cmd('Network.enable', {})
-        
-        # Set up request interception
-        driver.execute_cdp_cmd('Network.setRequestInterception', {
-            'patterns': [{'urlPattern': '*'}]
-        })
-        
-        print("✅ Network capture enabled")
-        return True
-    except Exception as e:
-        print(f"⚠️ Could not enable network capture: {str(e)}")
-        return False
-
 def set_dates_and_download(driver):
     """Set date range and download the report"""
     try:
@@ -319,16 +325,16 @@ def set_dates_and_download(driver):
         except Exception as e:
             print(f"⚠️ Error setting from date: {str(e)}")
         
-        # Set to date (current date)
+        # Set to date (23/05/2025 - current date in log)
         try:
             to_date_input = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
                 EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_txttodate_I"))
             )
-            current_date = datetime.now().strftime("%d/%m/%Y")
-            driver.execute_script(f"arguments[0].value = '{current_date}';", to_date_input)
+            # Use the current date format from the log (23/05/2025)
+            driver.execute_script("arguments[0].value = '23/05/2025';", to_date_input)
             driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", to_date_input)
             time.sleep(2)
-            print(f"✅ Set to date to {current_date}")
+            print(f"✅ Set to date to 23/05/2025")
         except Exception as e:
             print(f"⚠️ Error setting to date: {str(e)}")
         
@@ -346,10 +352,29 @@ def set_dates_and_download(driver):
         except Exception as e:
             print(f"⚠️ Error clicking Load button: {str(e)}")
         
-        # Try multiple approaches to click Export button
-        export_clicked = False
+        # ENHANCED: Get the form action and all form data
+        try:
+            form = driver.find_element(By.XPATH, "//form")
+            form_action = form.get_attribute('action')
+            print(f"Form action URL: {form_action}")
+            
+            # Save all form data for later use
+            form_data = {}
+            inputs = driver.find_elements(By.XPATH, "//form//input")
+            for input_elem in inputs:
+                input_name = input_elem.get_attribute('name')
+                input_value = input_elem.get_attribute('value')
+                if input_name:
+                    form_data[input_name] = input_value
+            
+            # Save form data for debugging
+            with open("form_data.json", "w") as f:
+                json.dump(form_data, f, indent=2)
+        except Exception as e:
+            print(f"⚠️ Error getting form data: {str(e)}")
         
-        # First check if we need to handle ASP.NET __doPostBack
+        # Attempt to export using standard approach first
+        export_clicked = False
         try:
             # Check if page uses ASP.NET postback
             viewstate = driver.find_element(By.ID, "__VIEWSTATE")
@@ -359,150 +384,59 @@ def set_dates_and_download(driver):
                 # Try to trigger export using JavaScript postback
                 driver.execute_script("__doPostBack('ctl00$ContentPlaceHolder1$btnexport', '')")
                 export_clicked = True
-                print("✅ Triggered export using __doPostBack")
-                time.sleep(10)
-        except:
-            pass
-        
-        if not export_clicked:
-            # Approach 1: Click Export button by ID
-            try:
-                export_button = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-                    EC.element_to_be_clickable((By.ID, "ctl00_ContentPlaceHolder1_btnexport"))
-                )
-                
-                # Scroll to the export button to ensure it's visible
-                driver.execute_script("arguments[0].scrollIntoView(true);", export_button)
-                time.sleep(1)
-                
-                # Try JavaScript click
-                driver.execute_script("arguments[0].click();", export_button)
-                export_clicked = True
                 print("✅ Clicked Export button (JavaScript)")
-            except Exception as e:
-                print(f"⚠️ Error with first export click approach: {str(e)}")
-                
-                # Approach 2: Try regular click
-                try:
-                    export_button = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnexport")
-                    export_button.click()
-                    export_clicked = True
-                    print("✅ Clicked Export button (regular click)")
-                except Exception as e2:
-                    print(f"⚠️ Error with second export click approach: {str(e2)}")
+                time.sleep(10)
+        except Exception as e:
+            print(f"⚠️ Export button click failed: {str(e)}")
         
-        # If still not clicked, try manual form submission
+        # Try direct form submission with export parameter
         if not export_clicked:
             try:
-                # Get form data and submit manually
-                form_data = driver.execute_script("""
-                    var form = document.forms[0];
-                    var formData = new FormData(form);
-                    var data = {};
-                    for (var [key, value] of formData.entries()) {
-                        data[key] = value;
-                    }
-                    return data;
-                """)
-                print(f"Form data captured: {list(form_data.keys())[:5]}...")  # Show first 5 keys
-                
-                # Try to submit form with export button value
+                print("Attempting direct form submission...")
                 driver.execute_script("""
-                    var form = document.forms[0];
-                    var input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = 'ctl00$ContentPlaceHolder1$btnexport';
-                    input.value = 'Export';
-                    form.appendChild(input);
+                    var form = document.querySelector('form');
+                    var exportInput = document.createElement('input');
+                    exportInput.type = 'hidden';
+                    exportInput.name = 'ctl00$ContentPlaceHolder1$btnexport';
+                    exportInput.value = 'Export';
+                    form.appendChild(exportInput);
+                    
+                    // Log form data
+                    console.log('Submitting form with export parameter');
+                    
                     form.submit();
                 """)
                 export_clicked = True
-                print("✅ Submitted form manually with export button")
-                time.sleep(10)
+                print("✅ Submitted form with export parameter")
+                time.sleep(15)
             except Exception as e:
-                print(f"⚠️ Manual form submission failed: {str(e)}")
+                print(f"⚠️ Form submission failed: {str(e)}")
         
-        if export_clicked:
-            # Handle potential alert/popup
-            try:
-                time.sleep(2)
-                alert = driver.switch_to.alert
-                print(f"Alert found: {alert.text}")
-                alert.accept()
-                print("✅ Accepted alert")
-            except:
-                print("No alert found (this is normal)")
-            
-            # Check for new windows/tabs
-            try:
-                window_handles = driver.window_handles
-                if len(window_handles) > 1:
-                    print(f"Found {len(window_handles)} windows")
-                    # Switch to the new window
-                    driver.switch_to.window(window_handles[-1])
-                    time.sleep(2)
-                    # Switch back
-                    driver.switch_to.window(window_handles[0])
-            except:
-                pass
-            
-            # Take screenshot after export
-            driver.save_screenshot("after_export.png")
-            
-            # Additional wait for download to start and complete
-            print("⏳ Waiting for download to complete...")
-            time.sleep(30)  # Give more time for download
-        else:
-            print("❌ Could not click Export button")
-        
-        # Check for iframes that might contain the export
+        # Handle potential alert/popup
         try:
-            iframes = driver.find_elements(By.TAG_NAME, "iframe")
-            if iframes:
-                print(f"Found {len(iframes)} iframes on the page")
-                for i, iframe in enumerate(iframes):
-                    try:
-                        driver.switch_to.frame(iframe)
-                        # Look for export button in iframe
-                        export_in_iframe = driver.find_elements(By.XPATH, "//input[contains(@id, 'export')] | //button[contains(text(), 'Export')]")
-                        if export_in_iframe:
-                            print(f"Found export button in iframe {i}")
-                        driver.switch_to.default_content()
-                    except:
-                        driver.switch_to.default_content()
+            alert = driver.switch_to.alert
+            print(f"Alert found: {alert.text}")
+            alert.accept()
+            print("✅ Accepted alert")
         except:
-            pass
+            print("No alert found (this is normal)")
         
-        # Save page source for debugging
-        with open("export_page_source.html", "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
+        # Take screenshot after export
+        driver.save_screenshot("after_export.png")
         
-        # Also check if download happened through JavaScript by checking for any blob URLs
-        try:
-            blob_urls = driver.execute_script("""
-                var urls = [];
-                var links = document.querySelectorAll('a');
-                for (var i = 0; i < links.length; i++) {
-                    if (links[i].href && links[i].href.startsWith('blob:')) {
-                        urls.push(links[i].href);
-                    }
-                }
-                return urls;
-            """)
-            if blob_urls:
-                print(f"Found blob URLs: {blob_urls}")
-        except:
-            pass
-        
-        # Check browser console for errors
+        # ENHANCED: Check and save any network request data
         try:
             logs = driver.get_log('browser')
             if logs:
                 print("Browser console logs:")
                 for log in logs[-10:]:  # Last 10 logs
                     print(f"  {log['level']}: {log['message']}")
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Error getting browser logs: {str(e)}")
+        
+        # Wait for download to complete
+        print("⏳ Waiting for download to complete...")
+        time.sleep(20)
         
         print("✅ Date setting and download steps completed")
         return True
@@ -587,112 +521,348 @@ def get_latest_file(folder_path, max_attempts=10, delay=5):
     print("  4. Download requires additional interaction (popup, etc.)")
     return None
 
-def alternative_download_method(driver, max_wait=30):
-    """Alternative method to download file by intercepting network requests"""
+def enhanced_download_method(driver):
+    """Enhanced method to capture and download report data"""
     try:
-        print("🔄 Trying alternative download method...")
+        print("🔄 Implementing enhanced download method...")
         
-        # Get cookies from the current session
-        cookies = driver.get_cookies()
-        session = requests.Session()
+        # Look for any iframe that might contain the export
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        if iframes:
+            print(f"Found {len(iframes)} iframes - checking each for export options")
+            for i, iframe in enumerate(iframes):
+                try:
+                    driver.switch_to.frame(iframe)
+                    print(f"Switched to iframe {i}")
+                    
+                    # Look for export button in iframe
+                    export_buttons = driver.find_elements(By.XPATH, 
+                        "//button[contains(text(), 'Export') or contains(@id, 'export')] | " +
+                        "//input[contains(@id, 'export') or contains(@value, 'Export')] | " +
+                        "//a[contains(text(), 'Export') or contains(@id, 'export')]")
+                    
+                    if export_buttons:
+                        print(f"Found {len(export_buttons)} export buttons in iframe {i}")
+                        for btn in export_buttons:
+                            try:
+                                print(f"Export button found: {btn.get_attribute('outerHTML')}")
+                                driver.execute_script("arguments[0].click();", btn)
+                                print(f"Clicked export button in iframe {i}")
+                                time.sleep(10)
+                            except Exception as e:
+                                print(f"Error clicking iframe export button: {str(e)}")
+                    
+                    driver.switch_to.default_content()
+                except Exception as e:
+                    print(f"Error with iframe {i}: {str(e)}")
+                    driver.switch_to.default_content()
         
-        # Add cookies to requests session
-        for cookie in cookies:
-            session.cookies.set(cookie['name'], cookie['value'])
+        # Try modified direct export form submission
+        print("Attempting modified direct form submission...")
         
-        # Get current page URL for reference
-        current_url = driver.current_url
-        base_url = "https://etrack.postaplus.net"
+        # Save page source for analysis
+        with open("page_before_enhanced_export.html", "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
         
-        # Look for download links in the page
-        download_links = driver.find_elements(By.XPATH, "//a[contains(@href, 'export') or contains(@href, 'download') or contains(@href, 'excel')]")
-        
-        if download_links:
-            for link in download_links:
-                href = link.get_attribute('href')
-                if href:
-                    print(f"Found potential download link: {href}")
-                    # Try to download using requests
-                    try:
-                        full_url = urljoin(base_url, href) if not href.startswith('http') else href
-                        response = session.get(full_url, timeout=30)
-                        if response.status_code == 200 and len(response.content) > 1000:
-                            # Save the file
-                            filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                            filepath = os.path.join(DOWNLOAD_FOLDER, filename)
-                            with open(filepath, 'wb') as f:
-                                f.write(response.content)
-                            print(f"✅ Downloaded file using alternative method: {filename}")
-                            return filepath
-                    except Exception as e:
-                        print(f"Failed to download from {href}: {str(e)}")
-        
-        # Try to construct direct download URL based on PostaPlus patterns
+        # Find the export button first to get its proper ID and attributes
+        export_button = None
         try:
-            # Common patterns for ASP.NET export URLs
-            export_patterns = [
+            export_button = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnexport")
+            print(f"Export button found: {export_button.get_attribute('outerHTML')}")
+            print(f"Export button onclick: {export_button.get_attribute('onclick')}")
+            print(f"Export button type: {export_button.get_attribute('type')}")
+        except:
+            print("Export button not found by ID")
+            # Try to find by other means
+            export_buttons = driver.find_elements(By.XPATH, 
+                "//button[contains(text(), 'Export') or contains(@id, 'export')] | " +
+                "//input[contains(@id, 'export') or contains(@value, 'Export')] | " +
+                "//a[contains(text(), 'Export') or contains(@id, 'export')]")
+            
+            if export_buttons:
+                export_button = export_buttons[0]
+                print(f"Export button found by xpath: {export_button.get_attribute('outerHTML')}")
+        
+        # Get form details
+        form = driver.find_element(By.XPATH, "//form")
+        form_action = form.get_attribute('action')
+        print(f"Form action: {form_action}")
+        
+        # Capture ViewState and EventValidation
+        viewstate = driver.find_element(By.ID, "__VIEWSTATE").get_attribute('value') if driver.find_elements(By.ID, "__VIEWSTATE") else ""
+        eventvalidation = driver.find_element(By.ID, "__EVENTVALIDATION").get_attribute('value') if driver.find_elements(By.ID, "__EVENTVALIDATION") else ""
+        
+        # Implement direct submission with full ASP.NET parameters
+        try:
+            # Get all form data
+            form_data = {}
+            inputs = driver.find_elements(By.XPATH, "//form//input")
+            for input_elem in inputs:
+                input_name = input_elem.get_attribute('name')
+                input_value = input_elem.get_attribute('value')
+                if input_name:
+                    form_data[input_name] = input_value
+            
+            # Add export button parameter
+            if export_button:
+                button_name = export_button.get_attribute('name')
+                if button_name:
+                    form_data[button_name] = "Export"
+                else:
+                    form_data["ctl00$ContentPlaceHolder1$btnexport"] = "Export"
+            else:
+                form_data["ctl00$ContentPlaceHolder1$btnexport"] = "Export"
+            
+            # Create a session and submit the form
+            session = requests.Session()
+            
+            # Get cookies from browser
+            cookies = driver.get_cookies()
+            for cookie in cookies:
+                session.cookies.set(cookie['name'], cookie['value'])
+            
+            # Post request to get the file
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': form_action,
+                'Origin': 'https://etrack.postaplus.net',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+            
+            print("Submitting form with the following data:")
+            print(json.dumps({k: v for k, v in form_data.items() if k.startswith('__') or 'btn' in k}, indent=2))
+            
+            response = session.post(form_action, data=form_data, headers=headers, allow_redirects=True)
+            
+            print(f"Form submission response status: {response.status_code}")
+            print(f"Response headers: {dict(response.headers)}")
+            
+            # Check if we got a file
+            if response.status_code == 200:
+                content_type = response.headers.get('Content-Type', '')
+                content_disp = response.headers.get('Content-Disposition', '')
+                
+                print(f"Response content type: {content_type}")
+                print(f"Content-Disposition: {content_disp}")
+                
+                # If it's an Excel file or the content length is substantial
+                if ('excel' in content_type.lower() or 
+                    'csv' in content_type.lower() or 
+                    'octet-stream' in content_type.lower() or
+                    'attachment' in content_disp.lower() or
+                    len(response.content) > 5000):
+                    
+                    # Determine filename
+                    filename = "postaplus_report.xlsx"
+                    if 'filename=' in content_disp:
+                        filename = content_disp.split('filename=')[1].strip('"\'')
+                    else:
+                        if 'csv' in content_type.lower():
+                            filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                        else:
+                            filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                    
+                    # Save the file
+                    filepath = os.path.join(DOWNLOAD_FOLDER, filename)
+                    with open(filepath, 'wb') as f:
+                        f.write(response.content)
+                    
+                    print(f"✅ Saved file: {filepath}")
+                    return filepath
+                else:
+                    # If we didn't get a file, save the response for debugging
+                    with open("form_submission_response.html", "wb") as f:
+                        f.write(response.content)
+                    print("Response saved to form_submission_response.html")
+        except Exception as e:
+            print(f"Form direct submission failed: {str(e)}")
+        
+        # Try alternative URL patterns
+        try:
+            print("Trying alternative URL patterns...")
+            session = requests.Session()
+            
+            # Get cookies from browser
+            cookies = driver.get_cookies()
+            for cookie in cookies:
+                session.cookies.set(cookie['name'], cookie['value'])
+            
+            # Base URL and patterns to try
+            base_url = "https://etrack.postaplus.net"
+            patterns = [
                 "/CustomerPortal/ExportToExcel.aspx",
                 "/CustomerPortal/DownloadReport.aspx",
+                "/CustomerPortal/Export.aspx",
                 "/CustomerPortal/ReportExport.aspx",
+                "/CustomerPortal/ExportData.aspx",
                 "/CustomerPortal/Handler/ExportHandler.ashx",
                 "/CustomerPortal/Export.ashx"
             ]
             
-            # Get form data for the request
-            viewstate = driver.find_element(By.ID, "__VIEWSTATE").get_attribute('value') if driver.find_elements(By.ID, "__VIEWSTATE") else ""
-            eventvalidation = driver.find_element(By.ID, "__EVENTVALIDATION").get_attribute('value') if driver.find_elements(By.ID, "__EVENTVALIDATION") else ""
-            
-            for pattern in export_patterns:
+            for pattern in patterns:
                 try:
                     export_url = urljoin(base_url, pattern)
-                    print(f"Trying export URL: {export_url}")
+                    print(f"Trying URL: {export_url}")
                     
-                    # Prepare POST data
+                    # Create form data with required ASP.NET parameters
                     post_data = {
                         '__VIEWSTATE': viewstate,
                         '__EVENTVALIDATION': eventvalidation,
-                        'ctl00$ContentPlaceHolder1$btnexport': 'Export'
                     }
                     
-                    headers = {
-                        'Referer': current_url,
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
+                    # Try different variations of the export button parameter
+                    variations = [
+                        "ctl00$ContentPlaceHolder1$btnexport",
+                        "btnexport",
+                        "Export",
+                        "export"
+                    ]
                     
-                    response = session.post(export_url, data=post_data, headers=headers, timeout=30)
+                    for var in variations:
+                        post_data[var] = "Export"
                     
-                    if response.status_code == 200 and len(response.content) > 1000:
-                        # Check if it's actually an Excel file
-                        if response.content.startswith(b'PK') or b'<?xml' in response.content[:100]:
-                            filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                            filepath = os.path.join(DOWNLOAD_FOLDER, filename)
-                            with open(filepath, 'wb') as f:
-                                f.write(response.content)
-                            print(f"✅ Downloaded file from {pattern}: {filename}")
-                            return filepath
+                    # Try to download
+                    response = session.post(export_url, data=post_data, headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Referer': form_action
+                    })
+                    
+                    if response.status_code == 200 and len(response.content) > 5000:
+                        # Determine filename
+                        filename = f"postaplus_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                        
+                        # Save the file
+                        filepath = os.path.join(DOWNLOAD_FOLDER, filename)
+                        with open(filepath, 'wb') as f:
+                            f.write(response.content)
+                        
+                        print(f"✅ Downloaded from alternative URL: {filepath}")
+                        return filepath
                 except Exception as e:
-                    print(f"Failed with pattern {pattern}: {str(e)}")
-                    continue
-        except Exception as e:
-            print(f"Error constructing download URL: {str(e)}")
-        
-        # If no direct download links, try to capture the export URL from the export button
-        try:
-            export_button = driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_btnexport")
-            onclick = export_button.get_attribute('onclick')
-            print(f"Export button onclick: {onclick}")
+                    print(f"Error with pattern {pattern}: {str(e)}")
             
-            # Try to find form action
-            form = driver.find_element(By.XPATH, "//form")
-            form_action = form.get_attribute('action')
-            print(f"Form action: {form_action}")
-        except:
-            pass
+        except Exception as e:
+            print(f"Alternative URL patterns failed: {str(e)}")
+        
+        # Try direct browser download using JavaScript 
+        try:
+            print("Trying direct browser download via JavaScript...")
+            
+            # JavaScript to handle download
+            download_script = """
+            // Function to encode data for download
+            function downloadAsExcel(jsonData, filename) {
+                const headerRow = Object.keys(jsonData[0]);
+                const rows = jsonData.map(obj => Object.values(obj));
+                
+                // Create CSV content
+                let csvContent = headerRow.join(',') + '\\n';
+                rows.forEach(row => {
+                    csvContent += row.join(',') + '\\n';
+                });
+                
+                // Create download link
+                const encodedUri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
+                const link = document.createElement('a');
+                link.setAttribute('href', encodedUri);
+                link.setAttribute('download', filename);
+                document.body.appendChild(link);
+                
+                // Trigger download
+                link.click();
+                document.body.removeChild(link);
+                return 'Download initiated';
+            }
+            
+            // Get table data if available
+            const tableData = [];
+            const table = document.querySelector('table');
+            if (table) {
+                const headers = Array.from(table.querySelectorAll('th')).map(th => th.textContent.trim());
+                const rows = table.querySelectorAll('tr');
+                
+                rows.forEach((row, rowIndex) => {
+                    if (rowIndex === 0) return; // Skip header row
+                    
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length > 0) {
+                        const rowData = {};
+                        cells.forEach((cell, cellIndex) => {
+                            if (cellIndex < headers.length) {
+                                rowData[headers[cellIndex]] = cell.textContent.trim();
+                            }
+                        });
+                        tableData.push(rowData);
+                    }
+                });
+                
+                if (tableData.length > 0) {
+                    return downloadAsExcel(tableData, 'postaplus_report.csv');
+                } else {
+                    return 'No table data found';
+                }
+            } else {
+                return 'No table found on page';
+            }
+            """
+            
+            result = driver.execute_script(download_script)
+            print(f"JavaScript download result: {result}")
+            time.sleep(10)  # Wait for download to complete
+            
+        except Exception as e:
+            print(f"JavaScript download failed: {str(e)}")
+        
+        # Final attempt: try to scrape data directly from the page
+        try:
+            print("Attempting to scrape data directly from the page...")
+            
+            # Get table data
+            table_data = driver.execute_script("""
+                const table = document.querySelector('table');
+                if (!table) return null;
+                
+                const headers = Array.from(table.querySelectorAll('th')).map(th => th.textContent.trim());
+                const rows = Array.from(table.querySelectorAll('tr')).slice(1);  // Skip header row
+                
+                const data = [];
+                rows.forEach(row => {
+                    const cells = Array.from(row.querySelectorAll('td'));
+                    if (cells.length > 0) {
+                        const rowData = {};
+                        cells.forEach((cell, index) => {
+                            if (index < headers.length) {
+                                rowData[headers[index]] = cell.textContent.trim();
+                            }
+                        });
+                        data.push(rowData);
+                    }
+                });
+                
+                return {headers, data};
+            """)
+            
+            if table_data and table_data['data'] and len(table_data['data']) > 0:
+                # Convert to DataFrame
+                df = pd.DataFrame(table_data['data'])
+                
+                # Save to CSV
+                filename = f"postaplus_report_scraped_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                filepath = os.path.join(DOWNLOAD_FOLDER, filename)
+                df.to_csv(filepath, index=False)
+                
+                print(f"✅ Scraped data saved to {filepath}")
+                return filepath
+            else:
+                print("No table data found to scrape")
+        except Exception as e:
+            print(f"Data scraping failed: {str(e)}")
         
         return None
         
     except Exception as e:
-        print(f"❌ Alternative download method failed: {str(e)}")
+        print(f"❌ Enhanced download method failed: {str(e)}")
         return None
 
 def create_empty_data():
@@ -848,10 +1018,10 @@ def main():
         try:
             latest_file = get_latest_file(DOWNLOAD_FOLDER)
             
-            # If no file found, try alternative download method
+            # If no file found, try enhanced download method
             if not latest_file:
-                print("⚠️ Regular download failed, trying alternative method...")
-                latest_file = alternative_download_method(driver)
+                print("⚠️ Regular download failed, trying enhanced method...")
+                latest_file = enhanced_download_method(driver)
             
             if latest_file:
                 processed_df = process_data(latest_file)
