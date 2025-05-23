@@ -7,3 +7,6 @@ google-auth-oauthlib==1.2.0
 openpyxl==3.1.2
 numpy==1.26.4
 pyarrow==15.0.0
+beautifulsoup4
+python-magic
+openpyxl
