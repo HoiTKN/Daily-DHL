@@ -275,7 +275,7 @@ def clear_download_folder():
     except Exception as e:
         print(f"⚠️ Error clearing download folder: {str(e)}")
 
-def monitor_downloads(initial_files, max_wait=60):
+def monitor_downloads(initial_files, max_wait=120):
     """Monitor download folder for new files - IMPROVED"""
     print(f"🔍 Monitoring downloads for up to {max_wait} seconds...")
     
