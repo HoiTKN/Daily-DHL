@@ -762,8 +762,36 @@ def map_columns_to_structure_improved(df):
         print(f"❌ Error mapping columns: {str(e)}")
         return None
 
+def clean_data_quality(df):
+    """Clean data quality issues like 'nan' strings - essential for QA"""
+    try:
+        print("🧹 Cleaning data quality issues...")
+        df_clean = df.copy()
+        
+        # Replace 'nan' strings with empty strings for better presentation
+        for col in df_clean.columns:
+            df_clean[col] = df_clean[col].replace(['nan', 'NaN', 'NULL'], '')
+            
+        # Clean date formats
+        date_columns = ['Create Date', 'Last Event Date']
+        for col in date_columns:
+            if col in df_clean.columns:
+                try:
+                    # Standardize date format to DD/MM/YYYY
+                    df_clean[col] = pd.to_datetime(df_clean[col], errors='coerce')
+                    df_clean[col] = df_clean[col].dt.strftime('%d/%m/%Y')
+                    print(f"✅ Cleaned date format for {col}")
+                except:
+                    print(f"⚠️ Could not clean dates in {col}")
+        
+        return df_clean
+        
+    except Exception as e:
+        print(f"⚠️ Error cleaning data: {str(e)}")
+        return df
+
 def process_data_improved(file_path=None):
-    """FIXED: Improved data processing with better file handling"""
+    """FIXED: Improved data processing with better file handling and data cleaning"""
     try:
         if not file_path or not os.path.exists(file_path):
             print("⚠️ No valid file path provided, using sample data")
@@ -801,11 +829,19 @@ def process_data_improved(file_path=None):
                 # Select only the columns we need
                 result_df = df[list(CSV_STRUCTURE.keys())].copy()
                 result_df = result_df.astype(str)
+                
+                # Clean data quality issues
+                result_df = clean_data_quality(result_df)
+                
+                # Add data quality metrics
+                print(f"📊 Final dataset: {len(result_df)} rows, {len(result_df.columns)} columns")
                 return result_df
             
             # Try to map columns
             mapped_df = map_columns_to_structure_improved(df)
             if mapped_df is not None and len(mapped_df) > 0:
+                # Clean the mapped data too
+                mapped_df = clean_data_quality(mapped_df)
                 return mapped_df
         
         print("⚠️ Could not process file data, using sample data")
