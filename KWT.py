@@ -29,6 +29,14 @@ DEFAULT_TIMEOUT = 30
 PAGE_LOAD_TIMEOUT = 60
 IMPLICIT_WAIT = 10
 
+# ADDED: Date configuration - easy to modify
+DEFAULT_FROM_DATE = "01/05/2025"  # You can change this as needed
+# TO_DATE will always be current date (calculated dynamically)
+
+# ADDED: Report configuration - choose your preferred date range
+# Options: "custom", "today", "yesterday", "last_7_days", "last_30_days", "current_month", "last_month"
+REPORT_DATE_RANGE = "custom"  # Change this to get different date ranges
+
 # CSV structure from original working code
 CSV_STRUCTURE = {
     'Airway Bill': 'Int64',
@@ -247,6 +255,42 @@ def navigate_to_reports(driver):
         print(f"❌ Failed to navigate to reports: {str(e)}")
         return False
 
+def get_date_range(range_type="custom"):
+    """
+    Get date range based on requirements - useful for different reporting needs
+    Perfect for FMCG operations where you might need daily, weekly, monthly reports
+    """
+    current_date = datetime.now()
+    
+    if range_type == "today":
+        from_date = current_date.strftime("%d/%m/%Y")
+        to_date = current_date.strftime("%d/%m/%Y")
+    elif range_type == "yesterday":
+        yesterday = current_date - timedelta(days=1)
+        from_date = yesterday.strftime("%d/%m/%Y")
+        to_date = yesterday.strftime("%d/%m/%Y")
+    elif range_type == "last_7_days":
+        from_date = (current_date - timedelta(days=7)).strftime("%d/%m/%Y")
+        to_date = current_date.strftime("%d/%m/%Y")
+    elif range_type == "last_30_days":
+        from_date = (current_date - timedelta(days=30)).strftime("%d/%m/%Y")
+        to_date = current_date.strftime("%d/%m/%Y")
+    elif range_type == "current_month":
+        from_date = current_date.replace(day=1).strftime("%d/%m/%Y")
+        to_date = current_date.strftime("%d/%m/%Y")
+    elif range_type == "last_month":
+        # Get first day of last month
+        first_day_current = current_date.replace(day=1)
+        last_month_last_day = first_day_current - timedelta(days=1)
+        last_month_first_day = last_month_last_day.replace(day=1)
+        from_date = last_month_first_day.strftime("%d/%m/%Y")
+        to_date = last_month_last_day.strftime("%d/%m/%Y")
+    else:  # custom - use default
+        from_date = DEFAULT_FROM_DATE
+        to_date = current_date.strftime("%d/%m/%Y")
+    
+    return from_date, to_date
+
 def clear_download_folder():
     """Clear old download files before starting"""
     try:
@@ -271,7 +315,7 @@ def clear_download_folder():
         print(f"⚠️ Error clearing download folder: {str(e)}")
 
 def get_current_files():
-    """Get current files in download folder - IMPROVED"""
+    """Get current files in download folder"""
     patterns = ['*.csv', '*.CSV', '*.xlsx', '*.XLSX', '*.xls', '*.XLS']
     current_files = set()
     
@@ -332,8 +376,63 @@ def monitor_downloads_improved(initial_files, max_wait=120):
     print(f"❌ No new download detected after {max_wait} seconds")
     return None
 
+def debug_page_content(driver):
+    """ADDED: Debug function to check what's actually loaded on the page"""
+    try:
+        print("🔍 DEBUG: Checking page content after Load button...")
+        
+        # Check if there's a data table or grid
+        try:
+            tables = driver.find_elements(By.TAG_NAME, "table")
+            print(f"🔍 Found {len(tables)} tables on page")
+            
+            for i, table in enumerate(tables):
+                try:
+                    rows = table.find_elements(By.TAG_NAME, "tr")
+                    if len(rows) > 1:  # Has data
+                        print(f"  Table {i}: {len(rows)} rows")
+                        # Get first few cells to see content
+                        first_row = rows[0] if rows else None
+                        if first_row:
+                            cells = first_row.find_elements(By.TAG_NAME, "td") + first_row.find_elements(By.TAG_NAME, "th")
+                            if cells:
+                                sample_text = " | ".join([cell.text.strip()[:20] for cell in cells[:5]])
+                                print(f"    Sample: {sample_text}")
+                except:
+                    continue
+        except Exception as e:
+            print(f"⚠️ Error checking tables: {str(e)}")
+        
+        # Check for any grid or data display elements
+        try:
+            gridview = driver.find_elements(By.XPATH, "//*[contains(@class, 'grid') or contains(@class, 'data') or contains(@id, 'Grid')]")
+            if gridview:
+                print(f"🔍 Found {len(gridview)} grid/data elements")
+                for i, grid in enumerate(gridview):
+                    try:
+                        text_content = grid.text.strip()
+                        if text_content:
+                            print(f"  Grid {i}: {text_content[:100]}...")
+                    except:
+                        continue
+        except Exception as e:
+            print(f"⚠️ Error checking grids: {str(e)}")
+            
+        # Check page source for row count indicators
+        try:
+            page_source = driver.page_source
+            if "Total Records" in page_source:
+                print("🔍 Found 'Total Records' text in page")
+            if "rows" in page_source.lower():
+                print("🔍 Found 'rows' text in page")
+        except:
+            pass
+            
+    except Exception as e:
+        print(f"⚠️ Debug error: {str(e)}")
+
 def set_dates_and_download_improved(driver):
-    """FIXED: Enhanced date setting and download process"""
+    """FIXED: Enhanced date setting with DYNAMIC current date and better debugging"""
     try:
         print("🔹 Setting date range and downloading report...")
         
@@ -344,29 +443,51 @@ def set_dates_and_download_improved(driver):
         initial_files = get_current_files()
         print(f"Initial files in folder: {len(initial_files)}")
         
-        # Set from date (01/05/2025)
+        # FIXED: Use configurable date range
+        from_date, to_date = get_date_range(REPORT_DATE_RANGE)
+        
+        print(f"📅 Date range ({REPORT_DATE_RANGE}): {from_date} to {to_date}")
+        
+        # FIXED: Clear any existing date values first
         try:
             from_date_input = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
                 EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_txtfromdate_I"))
             )
-            driver.execute_script("arguments[0].value = '01/05/2025';", from_date_input)
+            driver.execute_script("arguments[0].value = '';", from_date_input)  # Clear first
+            time.sleep(1)
+            driver.execute_script(f"arguments[0].value = '{from_date}';", from_date_input)
             driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", from_date_input)
             time.sleep(2)
-            print("✅ Set from date to 01/05/2025")
+            print(f"✅ Set from date to {from_date}")
         except Exception as e:
             print(f"⚠️ Error setting from date: {str(e)}")
         
-        # Set to date (23/05/2025)
+        # FIXED: Set to date to current date
         try:
             to_date_input = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
                 EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_txttodate_I"))
             )
-            driver.execute_script("arguments[0].value = '23/05/2025';", to_date_input)
+            driver.execute_script("arguments[0].value = '';", to_date_input)  # Clear first
+            time.sleep(1)
+            driver.execute_script(f"arguments[0].value = '{to_date}';", to_date_input)
             driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", to_date_input)
             time.sleep(2)
-            print("✅ Set to date to 23/05/2025")
+            print(f"✅ Set to date to {to_date} (DYNAMIC CURRENT DATE)")
         except Exception as e:
             print(f"⚠️ Error setting to date: {str(e)}")
+        
+        # ADDED: Clear any filters that might limit results
+        try:
+            # Look for and clear any status filters
+            status_dropdowns = driver.find_elements(By.XPATH, "//select[contains(@id, 'status') or contains(@id, 'Status')]")
+            for dropdown in status_dropdowns:
+                try:
+                    driver.execute_script("arguments[0].selectedIndex = 0;", dropdown)  # Select first option (usually "All")
+                    print("✅ Cleared status filter")
+                except:
+                    pass
+        except Exception as e:
+            print(f"⚠️ Error clearing filters: {str(e)}")
         
         # Click Load button
         try:
@@ -375,9 +496,12 @@ def set_dates_and_download_improved(driver):
             )
             driver.execute_script("arguments[0].click();", load_button)
             print("✅ Clicked Load button")
-            time.sleep(15)  # Wait for data to load
+            time.sleep(20)  # INCREASED wait time for data to load
         except Exception as e:
             print(f"⚠️ Error clicking Load button: {str(e)}")
+        
+        # ADDED: Debug what's loaded on the page
+        debug_page_content(driver)
         
         # FIXED: Enhanced export process
         export_success = False
@@ -386,7 +510,7 @@ def set_dates_and_download_improved(driver):
         # Try to find and click the export button
         try:
             # The specific export button from your HTML
-            export_button = WebDriverWait(driver, 10).until(
+            export_button = WebDriverWait(driver, 15).until(
                 EC.element_to_be_clickable((By.ID, "ctl00_ContentPlaceHolder1_btnexport"))
             )
             
@@ -641,9 +765,18 @@ def extract_shipment_data_from_html(file_path):
         return None
 
 def process_csv_file(file_path):
-    """FIXED: Process actual CSV file with proper encoding handling"""
+    """FIXED: Process actual CSV file with proper encoding handling and DEBUGGING"""
     try:
         print(f"📊 Processing CSV file: {os.path.basename(file_path)}")
+        
+        # ADDED: First, let's see what's actually in the file
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            first_few_lines = [f.readline().strip() for _ in range(5)]
+            
+        print("🔍 DEBUG: First few lines of CSV:")
+        for i, line in enumerate(first_few_lines):
+            if line:
+                print(f"  Line {i+1}: {line[:100]}{'...' if len(line) > 100 else ''}")
         
         # Try different encodings
         encodings = ['utf-8', 'latin1', 'cp1252', 'iso-8859-1', 'utf-16']
@@ -651,10 +784,20 @@ def process_csv_file(file_path):
         
         for encoding in encodings:
             try:
-                df = pd.read_csv(file_path, encoding=encoding)
+                # ADDED: Try with different parsing options
+                df = pd.read_csv(file_path, encoding=encoding, low_memory=False)
                 print(f"✅ Successfully read CSV with {encoding} encoding")
                 print(f"   Shape: {df.shape}")
                 print(f"   Columns: {list(df.columns)[:5]}...")  # Show first 5 columns
+                
+                # ADDED: Show data types and sample
+                print(f"   Data types: {df.dtypes.value_counts().to_dict()}")
+                if len(df) > 0:
+                    print(f"   Sample data:")
+                    for col in df.columns[:3]:  # Show first 3 columns
+                        sample_values = df[col].dropna().head(3).tolist()
+                        print(f"     {col}: {sample_values}")
+                
                 break
             except Exception as e:
                 print(f"⚠️ Failed with {encoding}: {str(e)}")
@@ -663,6 +806,12 @@ def process_csv_file(file_path):
         if df is None:
             print("❌ Could not read CSV file with any encoding")
             return None
+        
+        # ADDED: Check for empty or problematic data
+        if len(df) == 0:
+            print("⚠️ WARNING: CSV file is empty!")
+        elif len(df) < 10:
+            print(f"⚠️ WARNING: CSV file has only {len(df)} rows - might be filtered results")
         
         return df
         
@@ -778,7 +927,7 @@ def clean_data_quality(df):
             if col in df_clean.columns:
                 try:
                     # Standardize date format to DD/MM/YYYY
-                    df_clean[col] = pd.to_datetime(df_clean[col], errors='coerce')
+                    df_clean[col] = pd.to_datetime(df_clean[col], dayfirst=True, errors='coerce')
                     df_clean[col] = df_clean[col].dt.strftime('%d/%m/%Y')
                     print(f"✅ Cleaned date format for {col}")
                 except:
@@ -833,8 +982,12 @@ def process_data_improved(file_path=None):
                 # Clean data quality issues
                 result_df = clean_data_quality(result_df)
                 
-                # Add data quality metrics
+                # ADDED: Show what we're actually getting
                 print(f"📊 Final dataset: {len(result_df)} rows, {len(result_df.columns)} columns")
+                if len(result_df) > 0:
+                    print("📊 Sample of final data:")
+                    print(result_df.head(3).to_string())
+                
                 return result_df
             
             # Try to map columns
@@ -926,6 +1079,7 @@ def main():
     driver = None
     try:
         print("🚀 Starting PostaPlus report automation process...")
+        print(f"🎯 Using date range: {REPORT_DATE_RANGE}")
         
         # Install required packages
         try:
