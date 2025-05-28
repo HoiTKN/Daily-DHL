@@ -52,27 +52,28 @@ def setup_chrome_driver():
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
-        # Enhanced download handling - IMPROVED
+        # Enhanced download handling
         chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
         chrome_options.add_argument('--disable-extensions')
         chrome_options.add_argument('--disable-infobars')
         chrome_options.add_argument('--ignore-certificate-errors')
         chrome_options.add_argument("--enable-cookies")
         
-        # CRITICAL: Enhanced preferences for downloads - IMPROVED
+        # FIXED: Enhanced preferences for downloads
         chrome_options.add_experimental_option("prefs", {
             "download.default_directory": DOWNLOAD_FOLDER,
             "download.prompt_for_download": False,
             "download.directory_upgrade": True,
-            "safebrowsing.enabled": False,  # Disable to prevent download blocking
+            "safebrowsing.enabled": False,
             "safebrowsing.disable_download_protection": True,
             "download.extensions_to_open": "",
             "plugins.always_open_pdf_externally": True,
-            "browser.helperApps.neverAsk.saveToDisk": "application/vnd.ms-excel,application/msexcel,application/x-msexcel,application/x-ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,text/csv,application/download,text/plain",
+            "browser.helperApps.neverAsk.saveToDisk": "application/vnd.ms-excel,application/msexcel,application/x-msexcel,application/x-ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,text/csv,application/download,text/plain,application/force-download",
             "browser.download.folderList": 2,
             "browser.download.manager.showWhenStarting": False,
             "browser.download.dir": DOWNLOAD_FOLDER
         })
+        
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
@@ -99,7 +100,7 @@ def setup_chrome_driver():
         driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
-        # CRITICAL: Enable Chrome DevTools Protocol for headless downloads - IMPROVED
+        # FIXED: Enable Chrome DevTools Protocol for headless downloads
         try:
             driver.execute_cdp_cmd("Page.setDownloadBehavior", {
                 "behavior": "allow",
@@ -117,18 +118,17 @@ def setup_chrome_driver():
         raise
 
 def login_to_postaplus(driver):
-    """Login to PostaPlus portal - keeping original working logic"""
+    """Login to PostaPlus portal"""
     try:
         print("🔹 Accessing PostaPlus portal...")
         driver.get("https://etrack.postaplus.net/CustomerPortal/Login.aspx")
         
-        # Wait for page to load completely
         time.sleep(5)
         
         print(f"Current URL: {driver.current_url}")
         print(f"Page title: {driver.title}")
         
-        # Find username field - try multiple selectors
+        # Find username field
         username_input = None
         try:
             username_input = WebDriverWait(driver, 10).until(
@@ -147,7 +147,6 @@ def login_to_postaplus(driver):
                     print("❌ Could not find username field")
                     raise Exception("Username field not found")
         
-        # Fill username
         username_input.clear()
         username_input.send_keys("CR25005121")
         print("✅ Entered username")
@@ -165,7 +164,6 @@ def login_to_postaplus(driver):
                 password_input = driver.find_element(By.XPATH, "//input[@placeholder='Password']")
                 print("✅ Found password field by placeholder")
         
-        # Fill password
         password_input.clear()
         password_input.send_keys("levelupvn@1234")
         print("✅ Entered password")
@@ -183,14 +181,11 @@ def login_to_postaplus(driver):
                 login_button = driver.find_element(By.XPATH, "//input[@value='Login']")
                 print("✅ Found login button by value")
         
-        # Click login button using JavaScript
         driver.execute_script("arguments[0].click();", login_button)
         print("✅ Clicked login button")
         
-        # Wait for login to complete
         time.sleep(10)
         
-        # Check if login was successful
         current_url = driver.current_url
         if "login" not in current_url.lower() or current_url != "https://etrack.postaplus.net/CustomerPortal/Login.aspx":
             print("✅ Login appears successful - URL changed")
@@ -207,7 +202,7 @@ def login_to_postaplus(driver):
         return False
 
 def navigate_to_reports(driver):
-    """Navigate to reports section - keeping original working logic"""
+    """Navigate to reports section"""
     try:
         print("🔹 Navigating to Customer Excel Report section...")
         time.sleep(5)
@@ -253,7 +248,7 @@ def navigate_to_reports(driver):
         return False
 
 def clear_download_folder():
-    """Clear old download files before starting - IMPROVED"""
+    """Clear old download files before starting"""
     try:
         print("🔹 Clearing old download files...")
         patterns = ['*.csv', '*.CSV', '*.xlsx', '*.XLSX', '*.xls', '*.XLS', '*.html', '*.HTML']
@@ -275,8 +270,18 @@ def clear_download_folder():
     except Exception as e:
         print(f"⚠️ Error clearing download folder: {str(e)}")
 
-def monitor_downloads(initial_files, max_wait=120):
-    """Monitor download folder for new files - IMPROVED"""
+def get_current_files():
+    """Get current files in download folder - IMPROVED"""
+    patterns = ['*.csv', '*.CSV', '*.xlsx', '*.XLSX', '*.xls', '*.XLS']
+    current_files = set()
+    
+    for pattern in patterns:
+        current_files.update(glob.glob(os.path.join(DOWNLOAD_FOLDER, pattern)))
+    
+    return current_files
+
+def monitor_downloads_improved(initial_files, max_wait=120):
+    """FIXED: Improved download monitoring with better file detection"""
     print(f"🔍 Monitoring downloads for up to {max_wait} seconds...")
     
     start_time = time.time()
@@ -287,24 +292,32 @@ def monitor_downloads(initial_files, max_wait=120):
         
         # Get all current files matching patterns
         for pattern in patterns:
-            current_files.update(glob.glob(os.path.join(DOWNLOAD_FOLDER, pattern)))
+            files = glob.glob(os.path.join(DOWNLOAD_FOLDER, pattern))
+            current_files.update(files)
         
         # Find new files
         new_files = current_files - initial_files
         
         if new_files:
-            # Check if any new file is complete (not being written to)
+            # Check each new file
             for new_file in new_files:
                 try:
-                    # Check file size stability (file is complete)
-                    initial_size = os.path.getsize(new_file)
-                    time.sleep(2)
-                    final_size = os.path.getsize(new_file)
-                    
-                    if initial_size == final_size and final_size > 0:
-                        print(f"✅ New complete file detected: {os.path.basename(new_file)} ({final_size} bytes)")
-                        return new_file
+                    # Check if file exists and is not empty
+                    if os.path.exists(new_file) and os.path.getsize(new_file) > 100:
+                        # Wait a bit to ensure file is completely written
+                        time.sleep(3)
                         
+                        # Check file size stability (file is complete)
+                        initial_size = os.path.getsize(new_file)
+                        time.sleep(2)
+                        
+                        if os.path.exists(new_file):
+                            final_size = os.path.getsize(new_file)
+                            
+                            if initial_size == final_size and final_size > 100:
+                                print(f"✅ New complete file detected: {os.path.basename(new_file)} ({final_size} bytes)")
+                                return new_file
+                                
                 except Exception as e:
                     print(f"⚠️ Error checking file {new_file}: {str(e)}")
                     continue
@@ -319,18 +332,8 @@ def monitor_downloads(initial_files, max_wait=120):
     print(f"❌ No new download detected after {max_wait} seconds")
     return None
 
-def get_current_files():
-    """Get current files in download folder - IMPROVED"""
-    patterns = ['*.csv', '*.CSV', '*.xlsx', '*.XLSX', '*.xls', '*.XLS']
-    current_files = set()
-    
-    for pattern in patterns:
-        current_files.update(glob.glob(os.path.join(DOWNLOAD_FOLDER, pattern)))
-    
-    return current_files
-
-def set_dates_and_download(driver):
-    """Set date range and download the report - IMPROVED DOWNLOAD DETECTION"""
+def set_dates_and_download_improved(driver):
+    """FIXED: Enhanced date setting and download process"""
     try:
         print("🔹 Setting date range and downloading report...")
         
@@ -376,42 +379,24 @@ def set_dates_and_download(driver):
         except Exception as e:
             print(f"⚠️ Error clicking Load button: {str(e)}")
         
-        # Get form data for direct export fallback
-        form_action = None
-        form_data = {}
-        try:
-            form = driver.find_element(By.XPATH, "//form")
-            form_action = form.get_attribute('action')
-            print(f"Form action URL: {form_action}")
-            
-            inputs = driver.find_elements(By.XPATH, "//form//input")
-            for input_elem in inputs:
-                input_name = input_elem.get_attribute('name')
-                input_value = input_elem.get_attribute('value')
-                if input_name:
-                    form_data[input_name] = input_value
-        except Exception as e:
-            print(f"⚠️ Error getting form data: {str(e)}")
-        
-        # IMPROVED: Try multiple export methods
+        # FIXED: Enhanced export process
         export_success = False
+        download_file = None
         
-        # Method 1: Standard Export Button
+        # Try to find and click the export button
         try:
+            # The specific export button from your HTML
             export_button = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.ID, "ctl00_ContentPlaceHolder1_btnexport"))
             )
             
-            print("✅ Found export button, starting download monitor...")
-            
-            # Start monitoring downloads BEFORE clicking
-            download_file = None
+            print("✅ Found export button, starting download...")
             
             # Click export button
             driver.execute_script("arguments[0].click();", export_button)
             print("✅ Clicked Export button")
             
-            # Handle any alerts
+            # Handle potential alerts
             try:
                 WebDriverWait(driver, 3).until(EC.alert_is_present())
                 alert = driver.switch_to.alert
@@ -421,8 +406,11 @@ def set_dates_and_download(driver):
             except:
                 print("No alert found (this is normal)")
             
-            # Monitor for file download
-            download_file = monitor_downloads(initial_files, max_wait=45)
+            # Wait a bit for download to start
+            time.sleep(5)
+            
+            # Monitor for file download with improved detection
+            download_file = monitor_downloads_improved(initial_files, max_wait=60)
             
             if download_file:
                 print(f"✅ File downloaded successfully: {os.path.basename(download_file)}")
@@ -430,38 +418,15 @@ def set_dates_and_download(driver):
                 return download_file
                 
         except Exception as e:
-            print(f"⚠️ Standard export method failed: {str(e)}")
+            print(f"⚠️ Export button method failed: {str(e)}")
         
-        # Method 2: Alternative Export Buttons
+        # FIXED: Fallback - try direct HTTP download
         if not export_success:
-            try:
-                export_buttons = driver.find_elements(By.XPATH, 
-                    "//input[contains(@id, 'export') or contains(@value, 'Export')] | //button[contains(text(), 'Export')]")
-                    
-                if export_buttons:
-                    print("Trying alternative export buttons...")
-                    for i, btn in enumerate(export_buttons):
-                        try:
-                            print(f"Trying export button {i+1}")
-                            driver.execute_script("arguments[0].click();", btn)
-                            
-                            download_file = monitor_downloads(initial_files, max_wait=30)
-                            if download_file:
-                                print(f"✅ Alternative export method {i+1} succeeded")
-                                return download_file
-                        except Exception as btn_e:
-                            print(f"Alternative button {i+1} failed: {str(btn_e)}")
-                            continue
-                            
-            except Exception as e:
-                print(f"⚠️ Alternative export methods failed: {str(e)}")
-        
-        # Method 3: Direct HTTP Export (Fallback)
-        print("🔄 Trying direct HTTP export as fallback...")
-        html_file = direct_csv_export(driver, form_action, form_data)
-        
-        if html_file:
-            return html_file
+            print("🔄 Trying direct HTTP export as fallback...")
+            html_file = direct_export_improved(driver)
+            
+            if html_file:
+                return html_file
         
         print("❌ All export methods failed")
         return None
@@ -470,14 +435,12 @@ def set_dates_and_download(driver):
         print(f"❌ Failed to set dates and download: {str(e)}")
         return None
 
-def direct_csv_export(driver, form_action=None, form_data=None):
-    """Direct CSV export with improved session handling - IMPROVED"""
+def direct_export_improved(driver):
+    """FIXED: Improved direct export with better session handling"""
     try:
-        print("🔄 Attempting direct CSV export...")
+        print("🔄 Attempting direct export...")
         
         current_url = driver.current_url
-        if not form_action:
-            form_action = current_url
         
         # Create session with cookies from driver
         session = requests.Session()
@@ -485,23 +448,21 @@ def direct_csv_export(driver, form_action=None, form_data=None):
         for cookie in cookies:
             session.cookies.set(cookie['name'], cookie['value'])
         
-        # Enhanced form data collection
-        if not form_data:
-            form_data = {}
-            try:
-                inputs = driver.find_elements(By.XPATH, "//form//input")
-                for input_elem in inputs:
-                    name = input_elem.get_attribute('name')
-                    value = input_elem.get_attribute('value')
-                    input_type = input_elem.get_attribute('type')
-                    if name and name not in ['btnload']:  # Exclude load button
-                        form_data[name] = value if value else ''
-                
-                # Add export button data
-                form_data["ctl00$ContentPlaceHolder1$btnexport"] = "Export"
-                
-            except Exception as e:
-                print(f"⚠️ Error collecting form data: {str(e)}")
+        # Get form data
+        form_data = {}
+        try:
+            inputs = driver.find_elements(By.XPATH, "//form//input")
+            for input_elem in inputs:
+                name = input_elem.get_attribute('name')
+                value = input_elem.get_attribute('value')
+                if name and name not in ['btnload']:
+                    form_data[name] = value if value else ''
+            
+            # Add export button data
+            form_data["ctl00$ContentPlaceHolder1$btnexport"] = "Export"
+            
+        except Exception as e:
+            print(f"⚠️ Error collecting form data: {str(e)}")
         
         # Enhanced headers
         headers = {
@@ -516,8 +477,8 @@ def direct_csv_export(driver, form_action=None, form_data=None):
             'Upgrade-Insecure-Requests': '1',
         }
         
-        print(f"Making POST request to: {form_action}")
-        response = session.post(form_action, data=form_data, headers=headers, 
+        print(f"Making POST request to: {current_url}")
+        response = session.post(current_url, data=form_data, headers=headers, 
                               allow_redirects=True, timeout=60)
         
         print(f"Response status: {response.status_code}")
@@ -527,18 +488,22 @@ def direct_csv_export(driver, form_action=None, form_data=None):
         # Save response content
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
-        # Check content type and save appropriately
+        # Check if we got a file download or HTML
         content_type = response.headers.get('Content-Type', '').lower()
+        content_disposition = response.headers.get('Content-Disposition', '')
         
-        if 'excel' in content_type or 'spreadsheet' in content_type:
-            filepath = os.path.join(DOWNLOAD_FOLDER, f"postaplus_report_{timestamp}.xlsx")
-            print("✅ Received Excel content")
-        elif 'csv' in content_type:
-            filepath = os.path.join(DOWNLOAD_FOLDER, f"postaplus_report_{timestamp}.csv")
-            print("✅ Received CSV content")  
+        if 'attachment' in content_disposition or 'excel' in content_type or 'csv' in content_type:
+            # We got a file download
+            if 'excel' in content_type or 'spreadsheet' in content_type:
+                filepath = os.path.join(DOWNLOAD_FOLDER, f"CustomerReport_{timestamp}.xlsx")
+                print("✅ Received Excel file via HTTP")
+            else:
+                filepath = os.path.join(DOWNLOAD_FOLDER, f"CustomerReport_{timestamp}.csv")
+                print("✅ Received CSV file via HTTP")
         else:
-            filepath = os.path.join(DOWNLOAD_FOLDER, f"postaplus_report_{timestamp}.html")
-            print("⚠️ Received HTML content, will try to extract data")
+            # We got HTML content
+            filepath = os.path.join(DOWNLOAD_FOLDER, f"CustomerReport_{timestamp}.html")
+            print("⚠️ Received HTML content, will extract data")
         
         with open(filepath, 'wb') as f:
             f.write(response.content)
@@ -547,20 +512,20 @@ def direct_csv_export(driver, form_action=None, form_data=None):
         return filepath
         
     except Exception as e:
-        print(f"❌ Direct CSV export failed: {str(e)}")
+        print(f"❌ Direct export failed: {str(e)}")
         return None
 
-def extract_data_from_html_improved(file_path):
-    """Improved HTML data extraction with better table detection - IMPROVED"""
+def extract_shipment_data_from_html(file_path):
+    """FIXED: Extract actual shipment data from HTML, not service types"""
     try:
-        print(f"🔍 Extracting data from HTML file: {file_path}")
+        print(f"🔍 Extracting shipment data from HTML file: {file_path}")
         
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             html_content = f.read()
         
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Look for tables in the HTML
+        # Look for tables containing shipment data
         tables = soup.find_all('table')
         print(f"Found {len(tables)} tables in HTML")
         
@@ -568,79 +533,93 @@ def extract_data_from_html_improved(file_path):
             print("❌ No tables found in HTML")
             return None
         
-        # Find the best data table
+        # FIXED: Look for tables with shipment-related headers
+        shipment_keywords = [
+            'airway', 'awb', 'bill', 'tracking', 'consignee', 'shipment', 
+            'reference', 'create date', 'status', 'event'
+        ]
+        
         best_table = None
-        max_data_rows = 0
+        max_score = 0
         
         for i, table in enumerate(tables):
             rows = table.find_all('tr')
-            print(f"Table {i}: {len(rows)} rows")
+            if len(rows) < 2:  # Need at least header + 1 data row
+                continue
             
-            if len(rows) > 2:  # At least header + 2 data rows
-                # Check if this looks like a data table
-                first_row = rows[0] if rows else None
-                if first_row:
-                    cells = first_row.find_all(['th', 'td'])
-                    print(f"  Table {i}: {len(cells)} columns in first row")
+            # Check first few rows for shipment-related content
+            score = 0
+            sample_text = ""
+            
+            for row_idx, row in enumerate(rows[:3]):  # Check first 3 rows
+                cells = row.find_all(['th', 'td'])
+                for cell in cells:
+                    cell_text = cell.get_text().lower().strip()
+                    sample_text += cell_text + " "
                     
-                    if len(cells) >= 4:  # At least 4 columns for meaningful data
-                        data_rows = len(rows) - 1
-                        if data_rows > max_data_rows:
-                            max_data_rows = data_rows
-                            best_table = table
-                            print(f"  ✅ Selected table {i} as best candidate ({data_rows} data rows)")
+                    # Score based on shipment-related keywords
+                    for keyword in shipment_keywords:
+                        if keyword in cell_text:
+                            score += 1
+            
+            print(f"Table {i}: {len(rows)} rows, score: {score}")
+            if score > 2:  # Minimum threshold for shipment table
+                print(f"  Sample content: {sample_text[:100]}...")
+            
+            if score > max_score and len(rows) > 5:  # Need reasonable number of rows
+                max_score = score
+                best_table = table
+                print(f"  ✅ New best candidate (score: {score})")
         
         if not best_table:
-            print("❌ No suitable data table found")
-            return None
+            print("❌ No suitable shipment data table found")
+            # Fallback: try the largest table
+            largest_table = max(tables, key=lambda t: len(t.find_all('tr')))
+            if len(largest_table.find_all('tr')) > 5:
+                best_table = largest_table
+                print(f"⚠️ Using largest table as fallback ({len(largest_table.find_all('tr'))} rows)")
+            else:
+                return None
         
-        print(f"Processing table with {max_data_rows} data rows")
+        # Extract data from best table
+        rows = best_table.find_all('tr')
+        print(f"Processing table with {len(rows)} total rows")
         
-        # Extract headers with better cleaning
-        header_row = best_table.find('tr')
+        # Extract headers
+        header_row = rows[0]
         headers = []
-        if header_row:
-            for cell in header_row.find_all(['th', 'td']):
-                header_text = cell.get_text().strip()
-                # Clean up header text - remove newlines and extra spaces
-                header_text = re.sub(r'\s+', ' ', header_text)
-                # Remove common HTML artifacts
-                header_text = header_text.replace('\n', ' ').replace('\t', ' ')
-                headers.append(header_text)
+        for cell in header_row.find_all(['th', 'td']):
+            header_text = cell.get_text().strip()
+            header_text = re.sub(r'\s+', ' ', header_text)
+            headers.append(header_text)
         
-        # Remove empty headers at the end
-        while headers and not headers[-1]:
-            headers.pop()
+        # Clean up headers
+        headers = [h for h in headers if h]  # Remove empty headers
+        print(f"Headers found: {headers[:10]}...")  # Show first 10 headers
         
         if not headers:
             print("❌ No valid headers found")
             return None
         
-        print(f"Headers found: {headers}")
-        
-        # Extract data rows with better error handling
+        # Extract data rows
         data_rows = []
-        for row_idx, row in enumerate(best_table.find_all('tr')[1:], 1):  # Skip header
+        for row in rows[1:]:  # Skip header
             cells = row.find_all(['td', 'th'])
-            
             if not cells:
                 continue
                 
             row_data = []
-            for i, cell in enumerate(cells):
-                if i < len(headers):
-                    cell_text = cell.get_text().strip()
-                    # Clean up cell text
-                    cell_text = re.sub(r'\s+', ' ', cell_text)
-                    cell_text = cell_text.replace('\n', ' ').replace('\t', ' ')
-                    row_data.append(cell_text)
+            for cell in cells:
+                cell_text = cell.get_text().strip()
+                cell_text = re.sub(r'\s+', ' ', cell_text)
+                row_data.append(cell_text)
             
             # Only add rows with meaningful data
             if row_data and any(cell.strip() for cell in row_data):
-                # Pad row to match header length
+                # Ensure row matches header length
                 while len(row_data) < len(headers):
                     row_data.append('')
-                data_rows.append(row_data[:len(headers)])  # Trim to header length
+                data_rows.append(row_data[:len(headers)])
         
         if not data_rows:
             print("❌ No data rows found")
@@ -653,7 +632,7 @@ def extract_data_from_html_improved(file_path):
         
         # Show sample of extracted data
         print("Sample extracted data:")
-        print(df.head(3).to_string())
+        print(df.head(3).to_string() if len(df.columns) <= 10 else f"DataFrame with {len(df)} rows and {len(df.columns)} columns")
         
         return df
         
@@ -661,8 +640,38 @@ def extract_data_from_html_improved(file_path):
         print(f"❌ Error extracting data from HTML: {str(e)}")
         return None
 
-def map_columns_to_structure(df):
-    """Map extracted columns to expected CSV structure - IMPROVED"""
+def process_csv_file(file_path):
+    """FIXED: Process actual CSV file with proper encoding handling"""
+    try:
+        print(f"📊 Processing CSV file: {os.path.basename(file_path)}")
+        
+        # Try different encodings
+        encodings = ['utf-8', 'latin1', 'cp1252', 'iso-8859-1', 'utf-16']
+        df = None
+        
+        for encoding in encodings:
+            try:
+                df = pd.read_csv(file_path, encoding=encoding)
+                print(f"✅ Successfully read CSV with {encoding} encoding")
+                print(f"   Shape: {df.shape}")
+                print(f"   Columns: {list(df.columns)[:5]}...")  # Show first 5 columns
+                break
+            except Exception as e:
+                print(f"⚠️ Failed with {encoding}: {str(e)}")
+                continue
+        
+        if df is None:
+            print("❌ Could not read CSV file with any encoding")
+            return None
+        
+        return df
+        
+    except Exception as e:
+        print(f"❌ Error processing CSV file: {str(e)}")
+        return None
+
+def map_columns_to_structure_improved(df):
+    """FIXED: Improved column mapping for actual data structure"""
     try:
         print("🔄 Mapping columns to expected structure...")
         
@@ -670,11 +679,11 @@ def map_columns_to_structure(df):
             print("❌ No data to map")
             return None
         
-        # Enhanced column mapping with more variations
+        # Enhanced column mapping based on your actual CSV structure
         column_mapping = {
             'Airway Bill': [
                 'airway bill', 'awb', 'bill no', 'tracking no', 'tracking number', 
-                'shipment no', 'consignment', 'consignment no', 'waybill'
+                'shipment no', 'consignment', 'consignment no', 'waybill', 'sr.no'
             ],
             'Create Date': [
                 'create date', 'created date', 'date created', 'ship date', 
@@ -703,9 +712,9 @@ def map_columns_to_structure(df):
         }
         
         mapped_data = {}
-        df_columns_lower = [col.lower().strip() for col in df.columns]
+        df_columns_lower = [str(col).lower().strip() for col in df.columns]
         
-        print(f"Available columns: {list(df.columns)}")
+        print(f"Available columns ({len(df.columns)}): {list(df.columns)[:10]}...")
         
         for target_col, variations in column_mapping.items():
             found = False
@@ -743,6 +752,8 @@ def map_columns_to_structure(df):
         # Clean up the data
         for col in result_df.columns:
             result_df[col] = result_df[col].astype(str).str.strip()
+            # Remove any NaN values
+            result_df[col] = result_df[col].replace('nan', '')
         
         print(f"✅ Successfully mapped to structure with {len(result_df)} rows")
         return result_df
@@ -752,7 +763,7 @@ def map_columns_to_structure(df):
         return None
 
 def process_data_improved(file_path=None):
-    """Process downloaded file with improved error handling - IMPROVED"""
+    """FIXED: Improved data processing with better file handling"""
     try:
         if not file_path or not os.path.exists(file_path):
             print("⚠️ No valid file path provided, using sample data")
@@ -766,45 +777,34 @@ def process_data_improved(file_path=None):
         df = None
         
         # Process based on file type
-        if file_ext in ['.html', '.htm']:
-            df = extract_data_from_html_improved(file_path)
-            if df is not None:
-                mapped_df = map_columns_to_structure(df)
-                if mapped_df is not None and len(mapped_df) > 0:
-                    print(f"✅ Successfully processed HTML file: {len(mapped_df)} rows")
-                    return mapped_df
-                    
-        elif file_ext == '.csv':
-            # Try different encodings for CSV
-            for encoding in ['utf-8', 'latin1', 'cp1252', 'iso-8859-1']:
-                try:
-                    df = pd.read_csv(file_path, encoding=encoding)
-                    print(f"✅ Read CSV with {encoding} encoding: {len(df)} rows")
-                    break
-                except Exception as e:
-                    continue
-                    
+        if file_ext in ['.csv']:
+            df = process_csv_file(file_path)
+            
+        elif file_ext in ['.html', '.htm']:
+            df = extract_shipment_data_from_html(file_path)
+            
         elif file_ext in ['.xlsx', '.xls']:
             try:
-                df = pd.read_excel(file_path)
+                df = pd.read_excel(file_path, engine='openpyxl')
                 print(f"✅ Read Excel file: {len(df)} rows")
             except Exception as e:
                 print(f"⚠️ Error reading Excel: {str(e)}")
-                try:
-                    df = pd.read_excel(file_path, engine='openpyxl')
-                    print(f"✅ Read Excel with openpyxl: {len(df)} rows")
-                except:
-                    pass
         
         # If we have data, try to map it to expected structure
         if df is not None and len(df) > 0:
-            # Check if already has correct structure
-            if all(col in df.columns for col in CSV_STRUCTURE.keys()):
+            # If it already has our expected structure, use it directly
+            expected_cols = set(CSV_STRUCTURE.keys())
+            actual_cols = set(df.columns)
+            
+            if expected_cols.issubset(actual_cols):
                 print("✅ Data already has correct structure")
-                return df.astype(str)
+                # Select only the columns we need
+                result_df = df[list(CSV_STRUCTURE.keys())].copy()
+                result_df = result_df.astype(str)
+                return result_df
             
             # Try to map columns
-            mapped_df = map_columns_to_structure(df)
+            mapped_df = map_columns_to_structure_improved(df)
             if mapped_df is not None and len(mapped_df) > 0:
                 return mapped_df
         
@@ -832,7 +832,7 @@ def create_sample_data():
         }
         
         df = pd.DataFrame(data)
-        df = df.astype(str)  # Convert all to strings
+        df = df.astype(str)
         
         print(f"✅ Created sample dataset with {len(df)} rows")
         return df
@@ -914,7 +914,7 @@ def main():
             return
         
         # Set dates and download - IMPROVED
-        downloaded_file = set_dates_and_download(driver)
+        downloaded_file = set_dates_and_download_improved(driver)
         
         if downloaded_file:
             print(f"✅ File obtained: {os.path.basename(downloaded_file)}")
