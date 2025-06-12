@@ -2,7 +2,7 @@ name: DHL Report Automation
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 8:00 AM Vietnam time (UTC+7)
+    - cron: '0 23 * * *'  # 8:00 AM Vietnam time (UTC+7)
   workflow_dispatch:  # For manual trigger
 
 jobs:
