@@ -1,0 +1,35 @@
+name: Thai Duong Report Automation
+
+on:
+  schedule:
+    - cron: '30 23 * * *'  # 8:30 AM Vietnam time (UTC+7) - 30 minutes after DHL automation
+  workflow_dispatch:  # For manual trigger
+
+jobs:
+  run-thai-duong-automation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@latest
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create service account file
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+
+      - name: Run Thai Duong automation script
+        run: python thai_duong_automation.py
+        env:
+          THAI_DUONG_USERNAME: ${{ secrets.THAI_DUONG_USERNAME }}
+          THAI_DUONG_PASSWORD: ${{ secrets.THAI_DUONG_PASSWORD }}
