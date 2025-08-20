@@ -4,7 +4,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import pandas as pd
@@ -12,435 +12,618 @@ import os
 from datetime import datetime
 import time
 import numpy as np
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Constants
 GOOGLE_SHEET_ID = "16blaF86ky_4Eu4BK8AyXajohzpMsSyDaoPPKGVDYqWw"
 SHEET_NAME = "DHL"
-SERVICE_ACCOUNT_FILE = 'service_account.json'  # Will be created by GitHub Actions
-DOWNLOAD_FOLDER = os.getcwd()  # Use current directory for GitHub Actions
-DEFAULT_TIMEOUT = 30  # Increased default timeout
-PAGE_LOAD_TIMEOUT = 60  # Increased page load timeout
+SERVICE_ACCOUNT_FILE = 'service_account.json'
+DOWNLOAD_FOLDER = os.getcwd()
+DEFAULT_TIMEOUT = 30
+PAGE_LOAD_TIMEOUT = 60
 
 def setup_chrome_driver():
-    """Setup Chrome driver with necessary options"""
+    """Setup Chrome driver with enhanced options"""
     try:
-        from selenium.webdriver.chrome.service import Service
-        
         chrome_options = Options()
         chrome_options.add_argument('--headless')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
-        # Cookie handling - essential for session management
-        chrome_options.add_argument("--enable-cookies")
-        
-        # Set download preferences
+        # Enhanced download preferences
         prefs = {
             "download.default_directory": DOWNLOAD_FOLDER,
             "download.prompt_for_download": False,
             "download.directory_upgrade": True,
-            "safebrowsing.enabled": True
+            "safebrowsing.enabled": True,
+            "profile.default_content_settings.popups": 0,
+            "profile.default_content_setting_values.automatic_downloads": 1
         }
         chrome_options.add_experimental_option("prefs", prefs)
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
         
-        # Try different possible ChromeDriver locations
+        # Try to find ChromeDriver
         chromedriver_paths = [
-            'chromedriver',                    # System PATH
-            '/usr/local/bin/chromedriver',     # Common Linux location
-            '/usr/bin/chromedriver',           # Alternative Linux location
+            '/usr/bin/chromedriver',
+            '/usr/local/bin/chromedriver',
+            'chromedriver'
         ]
         
         driver = None
-        last_error = None
-        
         for driver_path in chromedriver_paths:
             try:
-                service = Service(executable_path=driver_path)
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-                print(f"✅ Successfully initialized ChromeDriver from: {driver_path}")
-                break
+                if os.path.exists(driver_path) or driver_path == 'chromedriver':
+                    service = Service(executable_path=driver_path)
+                    driver = webdriver.Chrome(service=service, options=chrome_options)
+                    logger.info(f"✅ ChromeDriver initialized from: {driver_path}")
+                    break
             except Exception as e:
-                last_error = e
+                logger.warning(f"Failed to use {driver_path}: {str(e)}")
                 continue
         
         if driver is None:
-            raise Exception(f"Could not initialize ChromeDriver. Last error: {last_error}")
+            raise Exception("Could not initialize ChromeDriver from any location")
         
-        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)  # Increased timeout for slow pages
+        # Set stealth mode
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+        
         return driver
         
     except Exception as e:
-        print(f"❌ Chrome driver setup failed: {str(e)}")
-        print("Debug information:")
-        try:
-            import subprocess
-            chrome_version = subprocess.check_output(['chrome', '--version']).decode().strip()
-            print(f"Chrome version: {chrome_version}")
-            chromedriver_version = subprocess.check_output(['chromedriver', '--version']).decode().strip()
-            print(f"ChromeDriver version: {chromedriver_version}")
-        except Exception as debug_e:
-            print(f"Could not get version info: {str(debug_e)}")
+        logger.error(f"❌ Chrome driver setup failed: {str(e)}")
         raise
 
-def login_to_dhl(driver):
-    """Login to DHL portal with improved session handling"""
+def debug_page_state(driver, step_name):
+    """Debug current page state"""
     try:
-        print("🔹 Accessing DHL portal...")
+        logger.info(f"🔍 DEBUG {step_name}:")
+        logger.info(f"   Current URL: {driver.current_url}")
+        logger.info(f"   Page title: {driver.title}")
+        logger.info(f"   Page source length: {len(driver.page_source)}")
+        
+        # Save page source for debugging
+        filename = f"debug_{step_name.lower().replace(' ', '_')}.html"
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(driver.page_source)
+        logger.info(f"   Page source saved to: {filename}")
+        
+        # Take screenshot
+        screenshot_file = f"debug_{step_name.lower().replace(' ', '_')}.png"
+        driver.save_screenshot(screenshot_file)
+        logger.info(f"   Screenshot saved to: {screenshot_file}")
+        
+    except Exception as e:
+        logger.warning(f"Could not debug page state: {str(e)}")
+
+def safe_find_element(driver, by, value, timeout=10):
+    """Safely find element with timeout"""
+    try:
+        element = WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((by, value))
+        )
+        return element
+    except TimeoutException:
+        logger.warning(f"Element not found: {by}={value}")
+        return None
+    except Exception as e:
+        logger.warning(f"Error finding element {by}={value}: {str(e)}")
+        return None
+
+def safe_click(driver, element, method="normal"):
+    """Safely click element with multiple fallback methods"""
+    if element is None:
+        return False
+        
+    try:
+        if method == "normal":
+            element.click()
+            return True
+        elif method == "js":
+            driver.execute_script("arguments[0].click();", element)
+            return True
+        elif method == "action":
+            from selenium.webdriver.common.action_chains import ActionChains
+            ActionChains(driver).move_to_element(element).click().perform()
+            return True
+    except Exception as e:
+        logger.warning(f"Click method '{method}' failed: {str(e)}")
+        return False
+
+def login_to_dhl(driver):
+    """Enhanced login with better debugging"""
+    try:
+        logger.info("🔹 Accessing DHL portal...")
         driver.get("https://ecommerceportal.dhl.com/Portal/pages/login/userlogin.xhtml")
-        driver.delete_all_cookies()  # Clear cookies before login
+        time.sleep(5)
         
-        # Save cookies before login
-        cookies_before = driver.get_cookies()
-        print(f"Cookies before login: {len(cookies_before)}")
+        debug_page_state(driver, "Initial Load")
         
-        # Wait for and fill in login credentials with explicit waits
-        username_input = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-            EC.presence_of_element_located((By.ID, "email1"))
-        )
-        username_input.clear()  # Ensure field is empty
-        username_input.send_keys("truongcongdai4@gmail.com")  # Using direct credentials as specified
+        # Clear cookies
+        driver.delete_all_cookies()
         
-        # Wait for password field
-        password_input = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-            EC.presence_of_element_located((By.NAME, "j_password"))
-        )
-        password_input.clear()  # Ensure field is empty
-        password_input.send_keys("@Thavi035@")  # Using direct credentials as specified
+        # Find username field
+        username_input = safe_find_element(driver, By.ID, "email1", 15)
+        if not username_input:
+            logger.error("❌ Could not find username field")
+            return False
         
-        # Take screenshot before login
-        driver.save_screenshot("before_login.png")
+        username_input.clear()
+        username_input.send_keys("truongcongdai4@gmail.com")
+        logger.info("✅ Username entered")
         
-        # Wait for login button and click
-        login_button = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-            EC.element_to_be_clickable((By.CLASS_NAME, "btn-login"))
-        )
-        driver.execute_script("arguments[0].click();", login_button)
+        # Find password field
+        password_input = safe_find_element(driver, By.NAME, "j_password", 15)
+        if not password_input:
+            logger.error("❌ Could not find password field")
+            return False
         
-        # Wait longer for login to complete - increased time
+        password_input.clear()
+        password_input.send_keys("@Thavi035@")
+        logger.info("✅ Password entered")
+        
+        debug_page_state(driver, "Before Login")
+        
+        # Find and click login button
+        login_button = safe_find_element(driver, By.CLASS_NAME, "btn-login", 15)
+        if not login_button:
+            logger.error("❌ Could not find login button")
+            return False
+        
+        # Try multiple click methods
+        clicked = False
+        for method in ["normal", "js", "action"]:
+            if safe_click(driver, login_button, method):
+                logger.info(f"✅ Login button clicked using {method}")
+                clicked = True
+                break
+        
+        if not clicked:
+            logger.error("❌ Could not click login button")
+            return False
+        
+        # Wait for login to process
+        logger.info("⏳ Waiting for login to process...")
         time.sleep(15)
         
-        # Save cookies after login
-        cookies_after = driver.get_cookies()
-        print(f"Cookies after login: {len(cookies_after)}")
+        debug_page_state(driver, "After Login")
         
-        # Take screenshot after login
-        driver.save_screenshot("after_login.png")
+        # Check if login was successful
+        current_url = driver.current_url
+        if "login" in current_url.lower():
+            logger.error("❌ Still on login page - login may have failed")
+            
+            # Check for error messages
+            error_messages = driver.find_elements(By.XPATH, "//div[contains(@class, 'error') or contains(@class, 'alert')]")
+            for msg in error_messages:
+                if msg.is_displayed():
+                    logger.error(f"Login error message: {msg.text}")
+            
+            return False
         
-        # Display the current URL after login
-        print(f"Current URL after login: {driver.current_url}")
-        
-        # Print the page source length to see if we've got a full page
-        print(f"Page source length: {len(driver.page_source)}")
-        
-        print("✅ Login steps completed!")
+        logger.info("✅ Login appears successful - URL changed")
         return True
         
     except Exception as e:
-        print(f"❌ Login failed: {str(e)}")
-        driver.save_screenshot("login_failed.png")
+        logger.error(f"❌ Login failed: {str(e)}")
+        debug_page_state(driver, "Login Error")
         return False
 
-def check_if_logged_in(driver):
-    """Check if we're actually logged in by looking for logout link or username"""
+def find_navigation_elements(driver):
+    """Find and analyze available navigation elements"""
     try:
-        # Save current page source for debug
-        with open("page_after_login.html", "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
-            
-        # Look for common elements that would indicate we're logged in
-        logout_elements = driver.find_elements(By.XPATH, "//a[contains(text(), 'Logout') or contains(text(), 'Log out') or contains(@href, 'logout')]")
-        username_elements = driver.find_elements(By.XPATH, "//span[contains(@class, 'username') or contains(@class, 'user-name')]")
+        logger.info("🔍 Analyzing navigation elements...")
         
-        if logout_elements or username_elements:
-            print("✅ Successfully verified login state - user is logged in")
-            return True
-        else:
-            print("⚠️ Could not verify logged-in state - no logout or username elements found")
-            # Try to find any navigation elements to verify we're on an internal page
-            nav_elements = driver.find_elements(By.XPATH, "//nav | //div[contains(@class, 'navigation')] | //ul[contains(@class, 'menu')]")
-            if nav_elements:
-                print("Found navigation elements - assuming we're logged in")
-                return True
-                
-            # Check if we're on the login page
-            if "login" in driver.current_url.lower():
-                print("⚠️ Still on login page - login may have failed")
-                return False
-                
-            print("Assuming we're logged in based on URL not being login page")
-            return True
-    except Exception as e:
-        print(f"Error checking login state: {str(e)}")
-        return False
-
-def change_language_to_english(driver):
-    """Change portal language to English with improved error handling"""
-    try:
-        print("🔹 Attempting to change language to English...")
-        
-        # Try different approaches to find the language selector
-        try:
-            # First wait for page to fully load
-            WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-                EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'ui-selectonemenu')]"))
-            )
-            
-            # Take a screenshot for debugging
-            driver.save_screenshot("page_before_language.png")
-            
-            # Approach 1: Try to find by any language selector by class
-            selectors = driver.find_elements(By.XPATH, "//div[contains(@class, 'ui-selectonemenu')]//label")
-            if selectors:
-                print(f"Found {len(selectors)} potential language selectors")
-                for i, selector in enumerate(selectors):
-                    print(f"Selector {i}: {selector.text}")
-                    if 'language' in selector.get_attribute('class').lower() or i == 0:
-                        driver.execute_script("arguments[0].click();", selector)
-                        break
-            
-            time.sleep(3)
-            
-            # Look for English in the dropdown that appeared
-            english_options = driver.find_elements(By.XPATH, "//li[contains(text(), 'English')]")
-            if english_options:
-                driver.execute_script("arguments[0].click();", english_options[0])
-                print("Selected English option")
-            else:
-                print("English option not found in dropdown")
-            
-            time.sleep(3)
-            print("✅ Language change attempted")
-            return True
-            
-        except Exception as inner_e:
-            print(f"⚠️ First approach failed: {str(inner_e)}")
-            
-            # Approach 2: Try a more general approach - skip language change
-            print("Skipping language change and continuing with script...")
-            return True
-        
-    except Exception as e:
-        print(f"❌ All language change approaches failed: {str(e)}")
-        # Return true to continue with script despite language error
-        return True
-
-def navigate_to_dashboard(driver):
-    """Navigate to dashboard with improved selectors based on HTML structure"""
-    try:
-        print("🔹 Attempting to navigate to dashboard...")
-        # Wait for the page to be fully loaded after login
-        time.sleep(10)
-        
-        # Look specifically for the dashboard span element as provided
-        dashboard_xpath = "//span[@class='left-navigation-text' and contains(text(), 'Dashboard')]"
-        
-        try:
-            # Try to find and click dashboard link with explicit wait
-            dashboard_element = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-                EC.element_to_be_clickable((By.XPATH, dashboard_xpath))
-            )
-            print("Found Dashboard link, clicking now...")
-            driver.execute_script("arguments[0].click();", dashboard_element)
-            time.sleep(5)  # Wait for page to load
-            
-            # Take screenshot after navigation
-            driver.save_screenshot("after_dashboard_click.png")
-            
-            # Verify we're on the dashboard page
-            if "dashboard" in driver.current_url.lower():
-                print("✅ Successfully navigated to dashboard")
-            else:
-                print(f"⚠️ Navigation might have failed - current URL: {driver.current_url}")
-                # Try direct URL navigation as backup
-                dashboard_url = "https://ecommerceportal.dhl.com/Portal/pages/dashboard/dashboard.xhtml"
-                print(f"Trying direct navigation to {dashboard_url}")
-                driver.get(dashboard_url)
-                time.sleep(5)
-        except Exception as e:
-            print(f"Error finding dashboard link: {str(e)}")
-            # Try direct URL navigation as backup
-            dashboard_url = "https://ecommerceportal.dhl.com/Portal/pages/dashboard/dashboard.xhtml"
-            print(f"Trying direct navigation to {dashboard_url}")
-            driver.get(dashboard_url)
-            time.sleep(5)
-        
-        # Now handle the date inputs with the specific IDs
-        try:
-            # Wait for date input fields to be available
-            start_date_input = WebDriverWait(driver, DEFAULT_TIMEOUT).until(
-                EC.presence_of_element_located((By.ID, "dashboardForm:frmDate_input"))
-            )
-            print("Found start date field")
-            
-            # Set start date (01/01/2025) using JavaScript
-            driver.execute_script("arguments[0].value = '01-01-2025';", start_date_input)
-            # Need to trigger date change event
-            driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", start_date_input)
-            time.sleep(2)
-            
-            # Find end date input
-            end_date_input = driver.find_element(By.ID, "dashboardForm:toDate_input")
-            # Set end date (current date)
-            current_date = datetime.now().strftime("%d-%m-%Y")
-            driver.execute_script(f"arguments[0].value = '{current_date}';", end_date_input)
-            # Trigger date change event
-            driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", end_date_input)
-            time.sleep(2)
-            
-            # Look for any submit/apply button after setting dates
-            apply_buttons = driver.find_elements(By.XPATH, "//button[contains(text(), 'Apply') or contains(text(), 'Submit') or contains(@class, 'submit')]")
-            if apply_buttons:
-                driver.execute_script("arguments[0].click();", apply_buttons[0])
-                time.sleep(3)
-            
-            print("✅ Successfully set date range")
-            driver.save_screenshot("after_date_setting.png")
-        except Exception as date_e:
-            print(f"Error setting dates: {str(date_e)}")
-            driver.save_screenshot("date_setting_error.png")
-        
-        print("✅ Dashboard navigation steps completed")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Failed to navigate to dashboard: {str(e)}")
-        driver.save_screenshot("dashboard_navigation_failed.png")
-        return False
-
-def download_report(driver):
-    """Download the Total Received report with improved selectors"""
-    try:
-        print("🔹 Attempting to download report...")
-        # Take screenshot before download
-        driver.save_screenshot("before_download.png")
-        
-        # Wait for page to be fully loaded
-        time.sleep(10)
-        
-        # First try to expand any sections that might contain the Total Received report
-        # Look for tables, expandable sections, or report lists
-        try:
-            # Look for any section titles or tabs that might need to be clicked first
-            section_titles = driver.find_elements(By.XPATH, "//div[contains(@class, 'ui-accordion-header') or contains(@class, 'tab-header')]")
-            for title in section_titles:
-                if title.is_displayed():
-                    try:
-                        driver.execute_script("arguments[0].click();", title)
-                        time.sleep(2)
-                    except:
-                        pass
-        except:
-            pass
-
-        # More specific XPath for the Total Received download based on page structure
-        download_xpath_variations = [
-            "//td[normalize-space(.)='Total Received']//following-sibling::td//img[contains(@id, 'xls')]",
-            "//tr[contains(.,'Total Received')]//img[contains(@id, 'xls')]",
-            "//table//tr[contains(.,'Total Received')]//img",
-            "//div[contains(text(),'Total Received')]//ancestor::tr//img",
-            "//span[contains(text(),'Total Received')]//ancestor::tr//img",
-            # Try to find any Excel download icons
-            "//img[contains(@id, 'xls') or contains(@src, 'excel') or contains(@src, 'xls')]"
+        # Look for various navigation patterns
+        nav_patterns = [
+            "//nav",
+            "//div[contains(@class, 'nav')]",
+            "//ul[contains(@class, 'menu')]",
+            "//div[contains(@class, 'sidebar')]",
+            "//div[contains(@class, 'left-navigation')]",
+            "//span[contains(@class, 'left-navigation-text')]",
+            "//a[contains(@href, 'dashboard')]",
+            "//span[contains(text(), 'Dashboard')]",
+            "//a[contains(text(), 'Dashboard')]"
         ]
         
-        # Check each XPath variation
-        report_found = False
-        for xpath in download_xpath_variations:
+        found_elements = []
+        for pattern in nav_patterns:
             try:
-                elements = driver.find_elements(By.XPATH, xpath)
-                print(f"Found {len(elements)} elements matching {xpath}")
-                
+                elements = driver.find_elements(By.XPATH, pattern)
                 if elements:
-                    for element in elements:
+                    logger.info(f"Found {len(elements)} elements matching: {pattern}")
+                    for i, element in enumerate(elements):
                         if element.is_displayed():
-                            print("Found visible download element")
-                            driver.execute_script("arguments[0].click();", element)
-                            report_found = True
-                            print("Clicked on download button")
-                            # Wait for download to complete
-                            time.sleep(20)
-                            break
-                            
-                    if report_found:
-                        break
+                            text = element.text.strip()[:50]
+                            href = element.get_attribute('href') or 'N/A'
+                            logger.info(f"  Element {i}: '{text}' (href: {href})")
+                            found_elements.append((pattern, element, text))
             except Exception as e:
-                print(f"Error with XPath {xpath}: {str(e)}")
-                continue
+                logger.warning(f"Error with pattern {pattern}: {str(e)}")
         
-        # If still not found, try a more aggressive approach
-        if not report_found:
-            print("⚠️ Trying more aggressive approaches to find download button")
-            
-            # Save page source for debugging
-            with open("page_source.html", "w", encoding="utf-8") as f:
-                f.write(driver.page_source)
-            
-            # Look for any download buttons or links
-            download_buttons = driver.find_elements(By.XPATH, 
-                "//a[contains(@href, 'download') or contains(@id, 'download')] | " +
-                "//button[contains(text(), 'Download') or contains(@id, 'download')] | " +
-                "//img[contains(@src, 'download') or contains(@alt, 'download')]")
-            
-            for button in download_buttons:
-                if button.is_displayed():
-                    try:
-                        print(f"Clicking potential download button: {button.get_attribute('outerHTML')}")
-                        driver.execute_script("arguments[0].click();", button)
-                        time.sleep(10)
-                        report_found = True
-                        break
-                    except:
-                        continue
-        
-        # Take screenshot after download attempt
-        driver.save_screenshot("after_download_attempt.png")
-        
-        print("✅ Report download attempts completed")
-        return True
+        return found_elements
         
     except Exception as e:
-        print(f"❌ Failed to download report: {str(e)}")
+        logger.error(f"Error analyzing navigation: {str(e)}")
+        return []
+
+def navigate_to_dashboard(driver):
+    """Enhanced dashboard navigation with better error handling"""
+    try:
+        logger.info("🔹 Attempting to navigate to dashboard...")
+        time.sleep(10)  # Wait for page to fully load
+        
+        debug_page_state(driver, "Before Dashboard Navigation")
+        
+        # Analyze available navigation
+        nav_elements = find_navigation_elements(driver)
+        
+        # Try to find dashboard link
+        dashboard_found = False
+        dashboard_selectors = [
+            "//span[@class='left-navigation-text' and contains(text(), 'Dashboard')]",
+            "//a[contains(text(), 'Dashboard')]",
+            "//span[contains(text(), 'Dashboard')]",
+            "//div[contains(text(), 'Dashboard')]",
+            "//a[contains(@href, 'dashboard')]"
+        ]
+        
+        for selector in dashboard_selectors:
+            try:
+                elements = driver.find_elements(By.XPATH, selector)
+                logger.info(f"Found {len(elements)} dashboard elements with selector: {selector}")
+                
+                for element in elements:
+                    if element.is_displayed():
+                        logger.info(f"Trying to click dashboard element: {element.text}")
+                        
+                        # Try multiple click methods
+                        for method in ["normal", "js", "action"]:
+                            if safe_click(driver, element, method):
+                                logger.info(f"✅ Clicked dashboard using {method}")
+                                dashboard_found = True
+                                time.sleep(5)
+                                break
+                        
+                        if dashboard_found:
+                            break
+                
+                if dashboard_found:
+                    break
+                    
+            except Exception as e:
+                logger.warning(f"Error with selector {selector}: {str(e)}")
+        
+        # If dashboard link not found, try direct navigation
+        if not dashboard_found:
+            logger.info("🔄 Dashboard link not found, trying direct URL navigation...")
+            dashboard_urls = [
+                "https://ecommerceportal.dhl.com/Portal/pages/dashboard/dashboard.xhtml",
+                "https://ecommerceportal.dhl.com/Portal/pages/shipment/shipmentList.xhtml",
+                "https://ecommerceportal.dhl.com/Portal/pages/reports/reports.xhtml"
+            ]
+            
+            for url in dashboard_urls:
+                try:
+                    logger.info(f"Trying direct navigation to: {url}")
+                    driver.get(url)
+                    time.sleep(8)
+                    
+                    # Check if page loaded successfully
+                    if "error" not in driver.current_url.lower() and "login" not in driver.current_url.lower():
+                        logger.info(f"✅ Successfully navigated to: {url}")
+                        dashboard_found = True
+                        break
+                except Exception as e:
+                    logger.warning(f"Direct navigation to {url} failed: {str(e)}")
+        
+        debug_page_state(driver, "After Dashboard Navigation")
+        
+        if dashboard_found:
+            logger.info("✅ Dashboard navigation completed")
+            return True
+        else:
+            logger.warning("⚠️ Dashboard navigation uncertain, continuing...")
+            return True  # Continue even if uncertain
+            
+    except Exception as e:
+        logger.error(f"❌ Dashboard navigation failed: {str(e)}")
+        debug_page_state(driver, "Dashboard Navigation Error")
         return False
 
-def get_latest_file(folder_path, max_attempts=5, delay=2):
-    """Get the most recently downloaded file from the specified folder"""
+def find_and_analyze_reports(driver):
+    """Find and analyze available reports on the page"""
+    try:
+        logger.info("🔍 Analyzing available reports and download options...")
+        
+        debug_page_state(driver, "Report Analysis")
+        
+        # Look for tables that might contain reports
+        tables = driver.find_elements(By.TAG_NAME, "table")
+        logger.info(f"Found {len(tables)} tables on page")
+        
+        report_data = []
+        for i, table in enumerate(tables):
+            try:
+                if table.is_displayed():
+                    rows = table.find_elements(By.TAG_NAME, "tr")
+                    if len(rows) > 1:  # Has header and data
+                        logger.info(f"Table {i}: {len(rows)} rows")
+                        
+                        # Get table content sample
+                        sample_text = table.text[:200].replace('\n', ' | ')
+                        logger.info(f"  Sample: {sample_text}")
+                        
+                        # Look for download buttons/links in this table
+                        download_elements = table.find_elements(By.XPATH, 
+                            ".//img[contains(@src, 'excel') or contains(@src, 'xls') or contains(@src, 'download')] | " +
+                            ".//a[contains(@href, 'excel') or contains(@href, 'xls') or contains(@href, 'download')] | " +
+                            ".//button[contains(text(), 'Download') or contains(text(), 'Export')]")
+                        
+                        if download_elements:
+                            logger.info(f"  Found {len(download_elements)} download elements in table {i}")
+                            for j, elem in enumerate(download_elements):
+                                if elem.is_displayed():
+                                    report_data.append((i, j, elem, table))
+            except Exception as e:
+                logger.warning(f"Error analyzing table {i}: {str(e)}")
+        
+        # Look for standalone download buttons
+        standalone_downloads = driver.find_elements(By.XPATH,
+            "//img[contains(@src, 'excel') or contains(@src, 'xls') or contains(@src, 'download')] | " +
+            "//a[contains(@href, 'excel') or contains(@href, 'xls') or contains(@href, 'download')] | " +
+            "//button[contains(text(), 'Download') or contains(text(), 'Export')]")
+        
+        logger.info(f"Found {len(standalone_downloads)} standalone download elements")
+        
+        for i, elem in enumerate(standalone_downloads):
+            if elem.is_displayed():
+                report_data.append(("standalone", i, elem, None))
+        
+        return report_data
+        
+    except Exception as e:
+        logger.error(f"Error analyzing reports: {str(e)}")
+        return []
+
+def attempt_downloads(driver, report_data):
+    """Attempt to download reports from found elements"""
+    try:
+        logger.info("🔹 Attempting to download from found elements...")
+        
+        # Clear download folder
+        clear_download_folder()
+        
+        download_success = False
+        for location, index, element, table in report_data:
+            try:
+                logger.info(f"Attempting download from {location}-{index}")
+                
+                # Get element info
+                tag_name = element.tag_name
+                src = element.get_attribute('src') or 'N/A'
+                href = element.get_attribute('href') or 'N/A'
+                onclick = element.get_attribute('onclick') or 'N/A'
+                text = element.text or 'N/A'
+                
+                logger.info(f"  Element: {tag_name}, src: {src}, href: {href}, text: {text}")
+                
+                # Try clicking the element
+                for method in ["normal", "js", "action"]:
+                    try:
+                        if safe_click(driver, element, method):
+                            logger.info(f"  Clicked using {method}")
+                            time.sleep(8)  # Wait for download
+                            
+                            # Check if download started
+                            if check_for_new_download():
+                                logger.info("✅ Download detected!")
+                                download_success = True
+                                break
+                    except Exception as e:
+                        logger.warning(f"  Click method {method} failed: {str(e)}")
+                
+                if download_success:
+                    break
+                    
+            except Exception as e:
+                logger.warning(f"Error with download attempt {location}-{index}: {str(e)}")
+        
+        return download_success
+        
+    except Exception as e:
+        logger.error(f"Error in download attempts: {str(e)}")
+        return False
+
+def clear_download_folder():
+    """Clear old download files"""
+    try:
+        files_removed = 0
+        for filename in os.listdir(DOWNLOAD_FOLDER):
+            if filename.endswith(('.xlsx', '.csv', '.xls')) and not filename.startswith('~'):
+                file_path = os.path.join(DOWNLOAD_FOLDER, filename)
+                os.remove(file_path)
+                files_removed += 1
+        logger.info(f"✅ Cleared {files_removed} old files")
+    except Exception as e:
+        logger.warning(f"Could not clear download folder: {str(e)}")
+
+def check_for_new_download():
+    """Check if new files were downloaded"""
+    try:
+        files = [f for f in os.listdir(DOWNLOAD_FOLDER) 
+                if f.endswith(('.xlsx', '.csv', '.xls')) and not f.startswith('~')]
+        return len(files) > 0
+    except:
+        return False
+
+def get_latest_file(folder_path, max_attempts=10, delay=3):
+    """Get the latest downloaded file with enhanced checking"""
+    logger.info(f"🔍 Looking for downloaded files in: {folder_path}")
+    
     for attempt in range(max_attempts):
         try:
-            # Look for any Excel or CSV file that might be the report
             files = [
                 os.path.join(folder_path, f) for f in os.listdir(folder_path)
-                if (f.endswith('.xlsx') or f.endswith('.csv'))
-                and not f.startswith('~$')  # Ignore temporary Excel files
+                if (f.endswith('.xlsx') or f.endswith('.csv') or f.endswith('.xls'))
+                and not f.startswith('~$')
             ]
             
             if not files:
-                print(f"No matching files found. Attempt {attempt + 1}/{max_attempts}")
+                logger.info(f"No files found. Attempt {attempt + 1}/{max_attempts}")
+                time.sleep(delay)
+                continue
+            
+            # Get the most recent file
+            latest_file = max(files, key=os.path.getctime)
+            file_size = os.path.getsize(latest_file)
+            
+            logger.info(f"Found file: {latest_file} (Size: {file_size} bytes)")
+            
+            if file_size == 0:
+                logger.warning("File is empty, waiting...")
+                time.sleep(delay)
+                continue
+            
+            # Try to read file to ensure it's complete
+            try:
+                if latest_file.endswith('.csv'):
+                    pd.read_csv(latest_file, nrows=1)
+                else:
+                    pd.read_excel(latest_file, nrows=1)
+                
+                logger.info(f"✅ Found valid file: {latest_file}")
+                return latest_file
+                
+            except Exception as e:
+                logger.warning(f"File not ready: {str(e)}")
                 time.sleep(delay)
                 continue
                 
-            latest_file = max(files, key=os.path.getctime)
-            
-            # Check if file can be opened (not still being written)
-            with open(latest_file, 'rb') as f:
-                pass
-                
-            print(f"✅ Found latest file: {latest_file}")
-            return latest_file
-            
-        except (PermissionError, FileNotFoundError) as e:
-            print(f"⚠️ Attempt {attempt + 1}: File access error: {str(e)}")
-            if attempt < max_attempts - 1:
-                print(f"Waiting {delay} seconds before retry...")
-                time.sleep(delay)
-            else:
-                print("Could not access the report file after multiple attempts")
-                return None
+        except Exception as e:
+            logger.warning(f"Error checking files: {str(e)}")
+            time.sleep(delay)
+    
+    logger.warning("❌ No valid file found")
+    return None
+
+def process_data(file_path):
+    """Process downloaded data with flexible column handling"""
+    if file_path is None:
+        logger.warning("No file to process, creating empty DataFrame")
+        return create_empty_data()
+    
+    logger.info(f"🔹 Processing file: {file_path}")
+    
+    try:
+        # Read file
+        if file_path.endswith('.csv'):
+            df = pd.read_csv(file_path, encoding='utf-8')
+        else:
+            df = pd.read_excel(file_path, engine='openpyxl')
+        
+        logger.info(f"File loaded. Shape: {df.shape}")
+        logger.info(f"Columns: {df.columns.tolist()}")
+        
+        # Show sample data
+        if len(df) > 0:
+            logger.info("Sample data:")
+            logger.info(df.head(3).to_string())
+        
+        # Create processed DataFrame with flexible mapping
+        processed_df = pd.DataFrame()
+        
+        # Map Order ID
+        if 'Consignee Name' in df.columns:
+            processed_df['Order ID'] = df['Consignee Name'].astype(str).str.extract(r'(\d{7})')[0].fillna('')
+        elif 'Order ID' in df.columns:
+            processed_df['Order ID'] = df['Order ID'].fillna('')
+        else:
+            processed_df['Order ID'] = ''
+        
+        # Map Tracking Number
+        tracking_cols = ['Tracking ID', 'Tracking Number', 'AWB', 'Waybill Number']
+        tracking_col = None
+        for col in tracking_cols:
+            if col in df.columns:
+                tracking_col = col
+                break
+        
+        processed_df['Tracking Number'] = df[tracking_col].fillna('') if tracking_col else ''
+        
+        # Map Pickup DateTime
+        pickup_cols = ['Pickup Event DateTime', 'Pickup Date', 'Collection Date', 'Ship Date']
+        pickup_col = None
+        for col in pickup_cols:
+            if col in df.columns:
+                pickup_col = col
+                break
+        
+        if pickup_col:
+            processed_df['Pickup DateTime'] = pd.to_datetime(df[pickup_col], errors='coerce')
+        else:
+            processed_df['Pickup DateTime'] = pd.NaT
+        
+        # Map Delivery Date
+        delivery_cols = ['Delivery Date', 'Delivered Date', 'POD Date']
+        delivery_col = None
+        for col in delivery_cols:
+            if col in df.columns:
+                delivery_col = col
+                break
+        
+        if delivery_col:
+            processed_df['Delivery Date'] = pd.to_datetime(df[delivery_col], errors='coerce')
+        else:
+            processed_df['Delivery Date'] = pd.NaT
+        
+        # Map Status
+        status_cols = ['Last Status', 'Status', 'Current Status', 'Shipment Status']
+        status_col = None
+        for col in status_cols:
+            if col in df.columns:
+                status_col = col
+                break
+        
+        processed_df['Status'] = df[status_col].fillna('') if status_col else ''
+        
+        # Sort by Pickup DateTime (newest first)
+        try:
+            processed_df = processed_df.sort_values('Pickup DateTime', ascending=False, na_position='last')
+            logger.info(f"✅ Sorted {len(processed_df)} rows")
+        except:
+            logger.warning("Could not sort data")
+        
+        # Convert datetime to string
+        processed_df['Pickup DateTime'] = processed_df['Pickup DateTime'].apply(
+            lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(x) else ''
+        )
+        processed_df['Delivery Date'] = processed_df['Delivery Date'].apply(
+            lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(x) else ''
+        )
+        
+        # Clean data
+        processed_df = processed_df.replace({np.nan: '', 'NaT': '', None: ''})
+        
+        logger.info(f"✅ Processing completed. Final shape: {processed_df.shape}")
+        return processed_df
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing data: {str(e)}")
+        return create_empty_data()
 
 def create_empty_data():
-    """Create an empty DataFrame if no data is available"""
-    print("⚠️ Creating empty data structure as fallback")
+    """Create empty DataFrame structure"""
     return pd.DataFrame({
         'Order ID': [],
         'Tracking Number': [],
@@ -449,211 +632,108 @@ def create_empty_data():
         'Status': []
     })
 
-def process_data(file_path):
-    """Process the downloaded DHL report with additional data cleaning"""
-    print(f"🔹 Processing file: {file_path}")
-    
-    try:
-        if file_path is None:
-            print("⚠️ No file to process, returning empty DataFrame")
-            return create_empty_data()
-            
-        time.sleep(2)
-        
-        if file_path.endswith('.csv'):
-            df = pd.read_csv(file_path)
-        else:
-            df = pd.read_excel(file_path, engine='openpyxl')
-        
-        # Print column names to help debug
-        print(f"Columns in file: {df.columns.tolist()}")
-        
-        # Check for expected columns and use more flexible extraction
-        # Try multiple approaches to extract Order ID
-        if 'Consignee Name' in df.columns:
-            df['Order ID'] = df['Consignee Name'].str.extract(r'(\d{7})')[0].fillna('')
-        elif 'Order ID' in df.columns:
-            df['Order ID'] = df['Order ID']
-        else:
-            df['Order ID'] = ''
-            print("⚠️ Could not find Order ID column, using empty values")
-        
-        # Handle Tracking Number
-        if 'Tracking ID' in df.columns:
-            tracking_col = 'Tracking ID'
-        elif 'Tracking Number' in df.columns:
-            tracking_col = 'Tracking Number'
-        elif 'AWB' in df.columns:
-            tracking_col = 'AWB'
-        else:
-            tracking_col = None
-            print("⚠️ Could not find Tracking Number column, using empty values")
-        
-        # Create processed dataframe with cleaned data
-        processed_df = pd.DataFrame()
-        processed_df['Order ID'] = df['Order ID'] if 'Order ID' in df.columns else ''
-        processed_df['Tracking Number'] = df[tracking_col].fillna('') if tracking_col else ''
-        
-        # Handle Pickup DateTime
-        if 'Pickup Event DateTime' in df.columns:
-            processed_df['Pickup DateTime'] = pd.to_datetime(df['Pickup Event DateTime'], errors='coerce').fillna(pd.NaT)
-        elif 'Pickup Date' in df.columns:
-            processed_df['Pickup DateTime'] = pd.to_datetime(df['Pickup Date'], errors='coerce').fillna(pd.NaT)
-        else:
-            processed_df['Pickup DateTime'] = pd.NaT
-            print("⚠️ Could not find Pickup DateTime column, using empty values")
-        
-        # Handle Delivery Date
-        if 'Delivery Date' in df.columns:
-            processed_df['Delivery Date'] = pd.to_datetime(df['Delivery Date'], errors='coerce').fillna(pd.NaT)
-        else:
-            processed_df['Delivery Date'] = pd.NaT
-            print("⚠️ Could not find Delivery Date column, using empty values")
-        
-        # Handle Status
-        if 'Last Status' in df.columns:
-            processed_df['Status'] = df['Last Status'].fillna('')
-        elif 'Status' in df.columns:
-            processed_df['Status'] = df['Status'].fillna('')
-        else:
-            processed_df['Status'] = ''
-            print("⚠️ Could not find Status column, using empty values")
-        
-        # Sort the DataFrame by Pickup DateTime from newest to oldest before converting to string
-        # Create a temporary copy of the datetime column for sorting
-        processed_df['temp_sort'] = processed_df['Pickup DateTime']
-        
-        # Sort by Pickup DateTime in descending order (newest first)
-        try:
-            print("🔹 Sorting data by Pickup DateTime (newest to oldest)...")
-            processed_df = processed_df.sort_values(by='temp_sort', ascending=False)
-            print(f"✅ Successfully sorted {len(processed_df)} rows")
-        except Exception as sort_e:
-            print(f"⚠️ Warning: Could not sort by Pickup DateTime: {str(sort_e)}")
-        
-        # Remove the temporary sorting column
-        processed_df = processed_df.drop('temp_sort', axis=1)
-        
-        # Convert datetime columns to string format
-        processed_df['Pickup DateTime'] = processed_df['Pickup DateTime'].apply(
-            lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(x) else '')
-        processed_df['Delivery Date'] = processed_df['Delivery Date'].apply(
-            lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(x) else '')
-        
-        # Replace any remaining NaN values with empty strings
-        processed_df = processed_df.replace({np.nan: '', 'NaT': '', None: ''})
-        
-        print("✅ Data processing completed successfully")
-        return processed_df
-        
-    except Exception as e:
-        print(f"❌ Error processing data: {str(e)}")
-        return create_empty_data()  # Return empty DataFrame on error
-
 def upload_to_google_sheets(df):
-    """Upload processed data to Google Sheets with additional error handling"""
-    print("🔹 Preparing to upload to Google Sheets...")
+    """Upload data to Google Sheets"""
+    logger.info("🔹 Uploading to Google Sheets...")
     
     try:
-        print("🔹 Authenticating with Google Sheets...")
+        if not os.path.exists(SERVICE_ACCOUNT_FILE):
+            logger.error(f"❌ Service account file not found: {SERVICE_ACCOUNT_FILE}")
+            return False
+        
         creds = Credentials.from_service_account_file(
             SERVICE_ACCOUNT_FILE,
             scopes=["https://www.googleapis.com/auth/spreadsheets"]
         )
         service = build("sheets", "v4", credentials=creds)
         
-        print("🔹 Preparing data for upload...")
+        # Prepare data
         headers = df.columns.tolist()
         data = df.astype(str).values.tolist()
         values = [headers] + data
         
-        print("🔹 Clearing existing content...")
+        logger.info(f"Uploading {len(data)} rows")
+        
+        # Clear existing content
         try:
             service.spreadsheets().values().clear(
                 spreadsheetId=GOOGLE_SHEET_ID,
                 range=f"{SHEET_NAME}!A1:Z1000"
             ).execute()
+            logger.info("✅ Cleared existing content")
         except Exception as e:
-            print(f"⚠️ Warning: Could not clear sheet: {str(e)}")
+            logger.warning(f"Could not clear sheet: {str(e)}")
         
-        print("🔹 Uploading new data...")
-        body = {
-            'values': values
-        }
-        
+        # Upload new data
         response = service.spreadsheets().values().update(
             spreadsheetId=GOOGLE_SHEET_ID,
             range=f"{SHEET_NAME}!A1",
             valueInputOption="USER_ENTERED",
-            body=body
+            body={'values': values}
         ).execute()
         
-        print("✅ Data uploaded successfully to Google Sheets")
+        logger.info("✅ Data uploaded successfully to Google Sheets")
         return True
         
     except Exception as e:
-        print(f"❌ Error uploading to Google Sheets: {str(e)}")
-        print("Debug information:")
-        print(f"Sheet ID: {GOOGLE_SHEET_ID}")
-        print(f"Sheet Name: {SHEET_NAME}")
-        raise
+        logger.error(f"❌ Upload failed: {str(e)}")
+        return False
 
 def main():
+    """Main execution function with comprehensive error handling"""
     driver = None
     try:
-        print("🚀 Starting DHL report automation process...")
+        logger.info("🚀 Starting DHL report automation process...")
         
-        # Step 1: Setup and login
+        # Setup driver
         driver = setup_chrome_driver()
         
+        # Login process
         if not login_to_dhl(driver):
-            print("⚠️ Login steps failed, but continuing with empty data...")
-            # Upload empty data rather than failing
+            logger.warning("⚠️ Login failed, uploading empty data...")
             upload_to_google_sheets(create_empty_data())
-            print("🎉 Process completed with empty data")
             return
         
-        if not check_if_logged_in(driver):
-            print("⚠️ Login verification failed, but continuing with empty data...")
-            # Upload empty data rather than failing
-            upload_to_google_sheets(create_empty_data())
-            print("🎉 Process completed with empty data")
-            return
-        
-        # Continue with language change and other steps
-        change_language_to_english(driver)
+        # Navigate to dashboard/reports
         navigate_to_dashboard(driver)
-        download_report(driver)
         
-        # Step 2: Process the downloaded file or use empty data if no file
-        try:
+        # Analyze and attempt downloads
+        report_data = find_and_analyze_reports(driver)
+        
+        if report_data:
+            logger.info(f"Found {len(report_data)} potential download elements")
+            download_success = attempt_downloads(driver, report_data)
+        else:
+            logger.warning("No download elements found")
+            download_success = False
+        
+        # Process downloaded file or create empty data
+        if download_success:
             latest_file = get_latest_file(DOWNLOAD_FOLDER)
-            if latest_file:
-                processed_df = process_data(latest_file)
-            else:
-                print("⚠️ No files were downloaded, using empty data structure")
-                processed_df = create_empty_data()
-        except Exception as e:
-            print(f"⚠️ Error in file processing: {str(e)}")
+            processed_df = process_data(latest_file)
+        else:
+            logger.warning("No downloads successful, using empty data")
             processed_df = create_empty_data()
         
-        # Step 3: Upload to Google Sheets
+        # Upload to Google Sheets
         upload_to_google_sheets(processed_df)
         
-        print("🎉 Complete process finished successfully!")
+        logger.info("🎉 Process completed successfully!")
         
     except Exception as e:
-        print(f"❌ Process failed: {str(e)}")
+        logger.error(f"❌ Main process failed: {str(e)}")
         try:
-            # Try to upload empty data even if process fails
             upload_to_google_sheets(create_empty_data())
-            print("⚠️ Uploaded empty data after process failure")
+            logger.info("⚠️ Uploaded empty data after failure")
         except Exception as upload_e:
-            print(f"❌ Failed to upload empty data: {str(upload_e)}")
+            logger.error(f"❌ Failed to upload empty data: {str(upload_e)}")
     
     finally:
         if driver:
-            driver.quit()
+            try:
+                driver.quit()
+            except:
+                pass
 
 if __name__ == "__main__":
     main()
