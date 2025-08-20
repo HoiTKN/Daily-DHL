@@ -30,6 +30,43 @@ PAGE_LOAD_TIMEOUT = 60
 DHL_USERNAME = os.getenv('DHL_USERNAME', 'truongcongdai4@gmail.com')
 DHL_PASSWORD = os.getenv('DHL_PASSWORD', '@Thavi035@')
 
+def validate_environment():
+    """Validate environment variables and setup"""
+    try:
+        logger.info("🔍 Validating environment setup...")
+        
+        # Check credentials
+        if not DHL_USERNAME or DHL_USERNAME == '':
+            logger.error("❌ DHL_USERNAME not set in environment")
+            return False
+            
+        if not DHL_PASSWORD or DHL_PASSWORD == '':
+            logger.error("❌ DHL_PASSWORD not set in environment") 
+            return False
+        
+        logger.info(f"✅ Username: {DHL_USERNAME}")
+        logger.info(f"✅ Password: {'*' * len(DHL_PASSWORD)} (length: {len(DHL_PASSWORD)})")
+        
+        # Check service account file
+        if not os.path.exists(SERVICE_ACCOUNT_FILE):
+            logger.warning(f"⚠️ Service account file not found: {SERVICE_ACCOUNT_FILE}")
+        else:
+            logger.info(f"✅ Service account file found: {SERVICE_ACCOUNT_FILE}")
+        
+        # Check download folder
+        if not os.path.exists(DOWNLOAD_FOLDER):
+            logger.warning(f"⚠️ Download folder not found: {DOWNLOAD_FOLDER}")
+            os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+            logger.info(f"✅ Created download folder: {DOWNLOAD_FOLDER}")
+        else:
+            logger.info(f"✅ Download folder exists: {DOWNLOAD_FOLDER}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Environment validation failed: {str(e)}")
+        return False
+
 def setup_chrome_driver():
     """Setup Chrome driver with enhanced options"""
     try:
@@ -86,6 +123,28 @@ def setup_chrome_driver():
     except Exception as e:
         logger.error(f"❌ Chrome driver setup failed: {str(e)}")
         raise
+
+def debug_page_state(driver, step_name):
+    """Debug current page state"""
+    try:
+        logger.info(f"🔍 DEBUG {step_name}:")
+        logger.info(f"   Current URL: {driver.current_url}")
+        logger.info(f"   Page title: {driver.title}")
+        logger.info(f"   Page source length: {len(driver.page_source)}")
+        
+        # Save page source for debugging
+        filename = f"debug_{step_name.lower().replace(' ', '_')}.html"
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(driver.page_source)
+        logger.info(f"   Page source saved to: {filename}")
+        
+        # Take screenshot
+        screenshot_file = f"debug_{step_name.lower().replace(' ', '_')}.png"
+        driver.save_screenshot(screenshot_file)
+        logger.info(f"   Screenshot saved to: {screenshot_file}")
+        
+    except Exception as e:
+        logger.warning(f"Could not debug page state: {str(e)}")
 
 def check_already_logged_in(driver):
     """Check if user is already logged in (manual login)"""
@@ -151,26 +210,6 @@ def try_direct_dashboard_access(driver):
     except Exception as e:
         logger.error(f"Error in direct dashboard access: {str(e)}")
         return False
-    """Debug current page state"""
-    try:
-        logger.info(f"🔍 DEBUG {step_name}:")
-        logger.info(f"   Current URL: {driver.current_url}")
-        logger.info(f"   Page title: {driver.title}")
-        logger.info(f"   Page source length: {len(driver.page_source)}")
-        
-        # Save page source for debugging
-        filename = f"debug_{step_name.lower().replace(' ', '_')}.html"
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(driver.page_source)
-        logger.info(f"   Page source saved to: {filename}")
-        
-        # Take screenshot
-        screenshot_file = f"debug_{step_name.lower().replace(' ', '_')}.png"
-        driver.save_screenshot(screenshot_file)
-        logger.info(f"   Screenshot saved to: {screenshot_file}")
-        
-    except Exception as e:
-        logger.warning(f"Could not debug page state: {str(e)}")
 
 def safe_find_element(driver, by, value, timeout=10):
     """Safely find element with timeout"""
@@ -205,6 +244,47 @@ def safe_click(driver, element, method="normal"):
     except Exception as e:
         logger.warning(f"Click method '{method}' failed: {str(e)}")
         return False
+
+def provide_login_troubleshooting(driver):
+    """Provide troubleshooting information for login issues"""
+    try:
+        logger.info("🔧 LOGIN TROUBLESHOOTING GUIDE:")
+        logger.info("=" * 50)
+        
+        # Check current page state
+        current_url = driver.current_url
+        page_title = driver.title
+        
+        logger.info(f"Current URL: {current_url}")
+        logger.info(f"Page title: {page_title}")
+        
+        # Check for common login issues
+        if "blocked" in driver.page_source.lower():
+            logger.warning("⚠️ Account may be blocked or suspended")
+        
+        if "captcha" in driver.page_source.lower():
+            logger.warning("⚠️ CAPTCHA detected - requires manual intervention")
+        
+        if "verification" in driver.page_source.lower():
+            logger.warning("⚠️ Additional verification required")
+        
+        # Provide manual steps
+        logger.info("\n💡 MANUAL STEPS TO TRY:")
+        logger.info("1. Login manually in browser with same credentials")
+        logger.info("2. Check if account requires additional verification")
+        logger.info("3. Verify credentials in GitHub Secrets:")
+        logger.info(f"   - DHL_USERNAME: {DHL_USERNAME}")
+        logger.info(f"   - DHL_PASSWORD: [length: {len(DHL_PASSWORD)} chars]")
+        logger.info("4. Try running script after manual login (stay logged in)")
+        logger.info("5. Check for emails about suspicious login attempts")
+        
+        logger.info("\n🔧 TECHNICAL DEBUGGING:")
+        logger.info("- Check debug_*.html files for page content")
+        logger.info("- Check debug_*.png files for visual state")
+        logger.info("- Verify no popup blockers or browser extensions interfering")
+        
+    except Exception as e:
+        logger.error(f"Error in troubleshooting: {str(e)}")
 
 def login_to_dhl(driver):
     """Enhanced login with comprehensive security handling"""
@@ -876,51 +956,17 @@ def upload_to_google_sheets(df):
         logger.error(f"❌ Upload failed: {str(e)}")
         return False
 
-def provide_login_troubleshooting(driver):
-    """Provide troubleshooting information for login issues"""
-    try:
-        logger.info("🔧 LOGIN TROUBLESHOOTING GUIDE:")
-        logger.info("=" * 50)
-        
-        # Check current page state
-        current_url = driver.current_url
-        page_title = driver.title
-        
-        logger.info(f"Current URL: {current_url}")
-        logger.info(f"Page title: {page_title}")
-        
-        # Check for common login issues
-        if "blocked" in driver.page_source.lower():
-            logger.warning("⚠️ Account may be blocked or suspended")
-        
-        if "captcha" in driver.page_source.lower():
-            logger.warning("⚠️ CAPTCHA detected - requires manual intervention")
-        
-        if "verification" in driver.page_source.lower():
-            logger.warning("⚠️ Additional verification required")
-        
-        # Provide manual steps
-        logger.info("\n💡 MANUAL STEPS TO TRY:")
-        logger.info("1. Login manually in browser with same credentials")
-        logger.info("2. Check if account requires additional verification")
-        logger.info("3. Verify credentials in GitHub Secrets:")
-        logger.info(f"   - DHL_USERNAME: {DHL_USERNAME}")
-        logger.info(f"   - DHL_PASSWORD: [length: {len(DHL_PASSWORD)} chars]")
-        logger.info("4. Try running script after manual login (stay logged in)")
-        logger.info("5. Check for emails about suspicious login attempts")
-        
-        logger.info("\n🔧 TECHNICAL DEBUGGING:")
-        logger.info("- Check debug_*.html files for page content")
-        logger.info("- Check debug_*.png files for visual state")
-        logger.info("- Verify no popup blockers or browser extensions interfering")
-        
-    except Exception as e:
-        logger.error(f"Error in troubleshooting: {str(e)}")
+def main():
     """Main execution function with comprehensive error handling"""
     driver = None
     try:
         logger.info("🚀 Starting DHL report automation process...")
-        logger.info(f"Using credentials - Username: {DHL_USERNAME[:10]}... Password: {'*' * len(DHL_PASSWORD)}")
+        
+        # Validate environment first
+        if not validate_environment():
+            logger.error("❌ Environment validation failed")
+            upload_to_google_sheets(create_empty_data())
+            return
         
         # Setup driver
         driver = setup_chrome_driver()
