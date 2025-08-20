@@ -26,6 +26,10 @@ DOWNLOAD_FOLDER = os.getcwd()
 DEFAULT_TIMEOUT = 30
 PAGE_LOAD_TIMEOUT = 60
 
+# Get credentials from environment variables (GitHub secrets)
+DHL_USERNAME = os.getenv('DHL_USERNAME', 'truongcongdai4@gmail.com')
+DHL_PASSWORD = os.getenv('DHL_PASSWORD', '@Thavi035@')
+
 def setup_chrome_driver():
     """Setup Chrome driver with enhanced options"""
     try:
@@ -83,7 +87,70 @@ def setup_chrome_driver():
         logger.error(f"❌ Chrome driver setup failed: {str(e)}")
         raise
 
-def debug_page_state(driver, step_name):
+def check_already_logged_in(driver):
+    """Check if user is already logged in (manual login)"""
+    try:
+        current_url = driver.current_url
+        logger.info(f"Checking login status. Current URL: {current_url}")
+        
+        # If not on login page, assume logged in
+        if "login" not in current_url.lower():
+            logger.info("✅ User appears to be already logged in")
+            return True
+        
+        # Look for logout elements or user indicators
+        logout_indicators = [
+            "//a[contains(text(), 'Logout') or contains(text(), 'Log out')]",
+            "//span[contains(@class, 'username') or contains(@class, 'user')]",
+            "//div[contains(@class, 'user-menu')]",
+            "//nav[contains(@class, 'user-nav')]"
+        ]
+        
+        for indicator in logout_indicators:
+            elements = driver.find_elements(By.XPATH, indicator)
+            if elements and any(elem.is_displayed() for elem in elements):
+                logger.info("✅ Found login indicators - user is logged in")
+                return True
+        
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Error checking login status: {str(e)}")
+        return False
+
+def try_direct_dashboard_access(driver):
+    """Try to access dashboard directly (if already logged in)"""
+    try:
+        logger.info("🔹 Trying direct dashboard access...")
+        
+        dashboard_urls = [
+            "https://ecommerceportal.dhl.com/Portal/pages/dashboard/dashboard.xhtml",
+            "https://ecommerceportal.dhl.com/Portal/pages/shipment/shipmentList.xhtml",
+            "https://ecommerceportal.dhl.com/Portal/pages/reports/reports.xhtml"
+        ]
+        
+        for url in dashboard_urls:
+            try:
+                logger.info(f"Trying: {url}")
+                driver.get(url)
+                time.sleep(8)
+                
+                current_url = driver.current_url
+                if "login" not in current_url.lower() and "error" not in current_url.lower():
+                    logger.info(f"✅ Successfully accessed: {url}")
+                    debug_page_state(driver, "Direct Dashboard Access")
+                    return True
+                else:
+                    logger.info(f"Redirected to: {current_url}")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to access {url}: {str(e)}")
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error in direct dashboard access: {str(e)}")
+        return False
     """Debug current page state"""
     try:
         logger.info(f"🔍 DEBUG {step_name}:")
@@ -140,82 +207,212 @@ def safe_click(driver, element, method="normal"):
         return False
 
 def login_to_dhl(driver):
-    """Enhanced login with better debugging"""
+    """Enhanced login with comprehensive security handling"""
     try:
         logger.info("🔹 Accessing DHL portal...")
         driver.get("https://ecommerceportal.dhl.com/Portal/pages/login/userlogin.xhtml")
-        time.sleep(5)
+        time.sleep(8)
         
         debug_page_state(driver, "Initial Load")
         
-        # Clear cookies
+        # Clear cookies and add realistic behavior
         driver.delete_all_cookies()
         
-        # Find username field
-        username_input = safe_find_element(driver, By.ID, "email1", 15)
+        # Add human-like mouse movements
+        try:
+            from selenium.webdriver.common.action_chains import ActionChains
+            actions = ActionChains(driver)
+            actions.move_by_offset(100, 100).perform()
+            time.sleep(1)
+        except:
+            pass
+        
+        # Check for CAPTCHA or additional security elements
+        captcha_elements = driver.find_elements(By.XPATH, 
+            "//div[contains(@class, 'captcha')] | //iframe[contains(@src, 'captcha')] | //div[contains(@class, 'recaptcha')]")
+        if captcha_elements:
+            logger.warning("⚠️ CAPTCHA detected - manual intervention may be required")
+        
+        # Find username field with multiple strategies
+        username_selectors = ["email1", "username", "user", "login"]
+        username_input = None
+        
+        for selector in username_selectors:
+            username_input = safe_find_element(driver, By.ID, selector, 5)
+            if username_input:
+                logger.info(f"Found username field: {selector}")
+                break
+        
+        if not username_input:
+            # Try by name attribute
+            for selector in username_selectors:
+                username_input = safe_find_element(driver, By.NAME, selector, 5)
+                if username_input:
+                    logger.info(f"Found username field by name: {selector}")
+                    break
+        
         if not username_input:
             logger.error("❌ Could not find username field")
             return False
         
+        # Human-like typing for username
         username_input.clear()
-        username_input.send_keys("truongcongdai4@gmail.com")
+        time.sleep(0.5)
+        for char in DHL_USERNAME:
+            username_input.send_keys(char)
+            time.sleep(0.05)  # Realistic typing speed
         logger.info("✅ Username entered")
         
         # Find password field
-        password_input = safe_find_element(driver, By.NAME, "j_password", 15)
+        password_selectors = ["j_password", "password", "pass", "pwd"]
+        password_input = None
+        
+        for selector in password_selectors:
+            password_input = safe_find_element(driver, By.NAME, selector, 5)
+            if password_input:
+                logger.info(f"Found password field: {selector}")
+                break
+        
+        if not password_input:
+            for selector in password_selectors:
+                password_input = safe_find_element(driver, By.ID, selector, 5)
+                if password_input:
+                    logger.info(f"Found password field by ID: {selector}")
+                    break
+        
         if not password_input:
             logger.error("❌ Could not find password field")
             return False
         
+        # Human-like typing for password
         password_input.clear()
-        password_input.send_keys("@Thavi035@")
+        time.sleep(0.5)
+        for char in DHL_PASSWORD:
+            password_input.send_keys(char)
+            time.sleep(0.05)
         logger.info("✅ Password entered")
+        
+        # Wait before clicking login (human behavior)
+        time.sleep(2)
         
         debug_page_state(driver, "Before Login")
         
-        # Find and click login button
-        login_button = safe_find_element(driver, By.CLASS_NAME, "btn-login", 15)
+        # Find login button with multiple strategies
+        login_selectors = [
+            (By.CLASS_NAME, "btn-login"),
+            (By.XPATH, "//button[contains(text(), 'Login') or contains(text(), 'Sign in')]"),
+            (By.XPATH, "//input[@type='submit']"),
+            (By.XPATH, "//button[@type='submit']"),
+            (By.ID, "login"),
+            (By.ID, "submit")
+        ]
+        
+        login_button = None
+        for by, selector in login_selectors:
+            login_button = safe_find_element(driver, by, selector, 5)
+            if login_button:
+                logger.info(f"Found login button: {by}={selector}")
+                break
+        
         if not login_button:
             logger.error("❌ Could not find login button")
             return False
         
-        # Try multiple click methods
-        clicked = False
-        for method in ["normal", "js", "action"]:
-            if safe_click(driver, login_button, method):
-                logger.info(f"✅ Login button clicked using {method}")
-                clicked = True
+        # Multiple login attempts with different methods
+        login_success = False
+        
+        for attempt in range(3):
+            logger.info(f"Login attempt {attempt + 1}/3")
+            
+            # Try different click methods
+            for method in ["normal", "js", "action"]:
+                try:
+                    if safe_click(driver, login_button, method):
+                        logger.info(f"✅ Login button clicked using {method}")
+                        
+                        # Wait and check for immediate feedback
+                        time.sleep(3)
+                        
+                        # Check for alerts or popups
+                        try:
+                            alert = driver.switch_to.alert
+                            alert_text = alert.text
+                            logger.info(f"Alert detected: {alert_text}")
+                            alert.accept()
+                            time.sleep(2)
+                        except:
+                            pass
+                        
+                        # Check for loading indicators
+                        loading_elements = driver.find_elements(By.XPATH, 
+                            "//div[contains(@class, 'loading')] | //div[contains(@class, 'spinner')] | //div[contains(text(), 'Loading')]")
+                        
+                        if loading_elements:
+                            logger.info("Loading indicator detected, waiting...")
+                            time.sleep(10)
+                        
+                        # Wait for potential redirect
+                        time.sleep(12)
+                        
+                        current_url = driver.current_url
+                        logger.info(f"URL after login attempt: {current_url}")
+                        
+                        if "login" not in current_url.lower():
+                            login_success = True
+                            break
+                        
+                except Exception as e:
+                    logger.warning(f"Click method {method} failed: {str(e)}")
+            
+            if login_success:
                 break
-        
-        if not clicked:
-            logger.error("❌ Could not click login button")
-            return False
-        
-        # Wait for login to process
-        logger.info("⏳ Waiting for login to process...")
-        time.sleep(15)
-        
-        debug_page_state(driver, "After Login")
-        
-        # Check if login was successful
-        current_url = driver.current_url
-        if "login" in current_url.lower():
-            logger.error("❌ Still on login page - login may have failed")
             
-            # Check for error messages
-            error_messages = driver.find_elements(By.XPATH, "//div[contains(@class, 'error') or contains(@class, 'alert')]")
-            for msg in error_messages:
-                if msg.is_displayed():
-                    logger.error(f"Login error message: {msg.text}")
+            # If still on login page, check for error messages
+            error_selectors = [
+                "//div[contains(@class, 'error')]",
+                "//div[contains(@class, 'alert')]",
+                "//div[contains(@class, 'message')]",
+                "//span[contains(@class, 'error')]",
+                "//p[contains(@class, 'error')]"
+            ]
+            
+            for selector in error_selectors:
+                error_elements = driver.find_elements(By.XPATH, selector)
+                for elem in error_elements:
+                    if elem.is_displayed() and elem.text.strip():
+                        logger.error(f"Error message detected: {elem.text}")
+            
+            # Check for additional security steps
+            security_elements = driver.find_elements(By.XPATH, 
+                "//div[contains(text(), 'verification')] | //div[contains(text(), 'security')] | //div[contains(text(), 'code')]")
+            
+            if security_elements:
+                for elem in security_elements:
+                    if elem.is_displayed():
+                        logger.warning(f"Security step detected: {elem.text}")
+            
+            # Wait before retry
+            if attempt < 2:
+                logger.info("Waiting before retry...")
+                time.sleep(5)
+        
+        debug_page_state(driver, "After All Login Attempts")
+        
+        # Final check
+        if login_success or "login" not in driver.current_url.lower():
+            logger.info("✅ Login appears successful")
+            return True
+        else:
+            logger.error("❌ Login failed after all attempts")
+            
+            # Provide troubleshooting guidance
+            provide_login_troubleshooting(driver)
             
             return False
-        
-        logger.info("✅ Login appears successful - URL changed")
-        return True
         
     except Exception as e:
-        logger.error(f"❌ Login failed: {str(e)}")
-        debug_page_state(driver, "Login Error")
+        logger.error(f"❌ Login failed with exception: {str(e)}")
+        debug_page_state(driver, "Login Exception")
         return False
 
 def find_navigation_elements(driver):
@@ -679,22 +876,99 @@ def upload_to_google_sheets(df):
         logger.error(f"❌ Upload failed: {str(e)}")
         return False
 
-def main():
+def provide_login_troubleshooting(driver):
+    """Provide troubleshooting information for login issues"""
+    try:
+        logger.info("🔧 LOGIN TROUBLESHOOTING GUIDE:")
+        logger.info("=" * 50)
+        
+        # Check current page state
+        current_url = driver.current_url
+        page_title = driver.title
+        
+        logger.info(f"Current URL: {current_url}")
+        logger.info(f"Page title: {page_title}")
+        
+        # Check for common login issues
+        if "blocked" in driver.page_source.lower():
+            logger.warning("⚠️ Account may be blocked or suspended")
+        
+        if "captcha" in driver.page_source.lower():
+            logger.warning("⚠️ CAPTCHA detected - requires manual intervention")
+        
+        if "verification" in driver.page_source.lower():
+            logger.warning("⚠️ Additional verification required")
+        
+        # Provide manual steps
+        logger.info("\n💡 MANUAL STEPS TO TRY:")
+        logger.info("1. Login manually in browser with same credentials")
+        logger.info("2. Check if account requires additional verification")
+        logger.info("3. Verify credentials in GitHub Secrets:")
+        logger.info(f"   - DHL_USERNAME: {DHL_USERNAME}")
+        logger.info(f"   - DHL_PASSWORD: [length: {len(DHL_PASSWORD)} chars]")
+        logger.info("4. Try running script after manual login (stay logged in)")
+        logger.info("5. Check for emails about suspicious login attempts")
+        
+        logger.info("\n🔧 TECHNICAL DEBUGGING:")
+        logger.info("- Check debug_*.html files for page content")
+        logger.info("- Check debug_*.png files for visual state")
+        logger.info("- Verify no popup blockers or browser extensions interfering")
+        
+    except Exception as e:
+        logger.error(f"Error in troubleshooting: {str(e)}")
     """Main execution function with comprehensive error handling"""
     driver = None
     try:
         logger.info("🚀 Starting DHL report automation process...")
+        logger.info(f"Using credentials - Username: {DHL_USERNAME[:10]}... Password: {'*' * len(DHL_PASSWORD)}")
         
         # Setup driver
         driver = setup_chrome_driver()
         
-        # Login process
-        if not login_to_dhl(driver):
-            logger.warning("⚠️ Login failed, uploading empty data...")
-            upload_to_google_sheets(create_empty_data())
-            return
+        # Strategy 1: Try direct dashboard access first (in case user is already logged in)
+        logger.info("🔹 Strategy 1: Checking if already logged in...")
         
-        # Navigate to dashboard/reports
+        # Go to main portal first
+        driver.get("https://ecommerceportal.dhl.com/Portal/")
+        time.sleep(5)
+        
+        if check_already_logged_in(driver):
+            logger.info("✅ User appears to be already logged in")
+            if try_direct_dashboard_access(driver):
+                logger.info("✅ Direct dashboard access successful")
+                skip_login = True
+            else:
+                skip_login = False
+        else:
+            skip_login = False
+        
+        # Strategy 2: Perform login if needed
+        if not skip_login:
+            logger.info("🔹 Strategy 2: Performing login...")
+            if not login_to_dhl(driver):
+                logger.warning("⚠️ Login failed, trying alternative approaches...")
+                
+                # Strategy 3: Try manual intervention guidance
+                logger.info("🔹 Strategy 3: Attempting alternative login methods...")
+                
+                # Try refreshing and login again
+                driver.refresh()
+                time.sleep(10)
+                
+                if not login_to_dhl(driver):
+                    logger.error("❌ All login strategies failed")
+                    
+                    # Final strategy: Upload empty data and inform user
+                    logger.warning("⚠️ Could not login automatically. Manual intervention may be required.")
+                    logger.info("💡 Suggestion: Run the script manually after logging in through browser")
+                    
+                    upload_to_google_sheets(create_empty_data())
+                    return
+        
+        # Continue with report extraction
+        logger.info("🔹 Proceeding with report extraction...")
+        
+        # Navigate to reports section
         navigate_to_dashboard(driver)
         
         # Analyze and attempt downloads
