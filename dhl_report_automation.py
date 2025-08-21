@@ -9,7 +9,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, date
 import time
 import numpy as np
 import logging
@@ -25,6 +25,10 @@ SERVICE_ACCOUNT_FILE = 'service_account.json'
 DOWNLOAD_FOLDER = os.getcwd()
 DEFAULT_TIMEOUT = 30
 PAGE_LOAD_TIMEOUT = 60
+
+# Date range settings - from start of year to current date
+START_DATE = "01/01/2025"
+END_DATE = datetime.now().strftime("%d/%m/%Y")  # Current date in DD/MM/YYYY format
 
 # Get credentials from environment variables (GitHub secrets)
 DHL_USERNAME = os.getenv('DHL_USERNAME', 'truongcongdai4@gmail.com')
@@ -46,6 +50,7 @@ def validate_environment():
         
         logger.info(f"✅ Username: {DHL_USERNAME}")
         logger.info(f"✅ Password: {'*' * len(DHL_PASSWORD)} (length: {len(DHL_PASSWORD)})")
+        logger.info(f"✅ Date range: {START_DATE} to {END_DATE}")
         
         # Check service account file
         if not os.path.exists(SERVICE_ACCOUNT_FILE):
@@ -495,6 +500,174 @@ def login_to_dhl(driver):
         debug_page_state(driver, "Login Exception")
         return False
 
+def set_date_range(driver):
+    """Set date range for reports from start of year to current date"""
+    try:
+        logger.info(f"🔹 Setting date range: {START_DATE} to {END_DATE}")
+        
+        # Multiple date input strategies for different portal layouts
+        date_strategies = [
+            # Strategy 1: Dashboard form date inputs
+            {
+                'from_selectors': ['dashboardForm:frmDate_input', 'fromDate', 'startDate'],
+                'to_selectors': ['dashboardForm:toDate_input', 'toDate', 'endDate'],
+                'apply_selectors': ['dashboardForm:applyBtn', 'applyButton', '//button[contains(text(), "Apply")]']
+            },
+            # Strategy 2: Report form date inputs  
+            {
+                'from_selectors': ['reportForm:fromDate_input', 'report_fromDate', 'from_date'],
+                'to_selectors': ['reportForm:toDate_input', 'report_toDate', 'to_date'],
+                'apply_selectors': ['reportForm:submitBtn', 'submitButton', '//button[contains(text(), "Submit")]']
+            },
+            # Strategy 3: Generic date inputs
+            {
+                'from_selectors': ['from_date', 'start_date', 'dateFrom'],
+                'to_selectors': ['to_date', 'end_date', 'dateTo'],
+                'apply_selectors': ['submit', 'apply', '//input[@type="submit"]']
+            }
+        ]
+        
+        date_set_success = False
+        
+        for strategy_num, strategy in enumerate(date_strategies, 1):
+            logger.info(f"Trying date strategy {strategy_num}...")
+            
+            try:
+                # Find from date input
+                from_input = None
+                for selector in strategy['from_selectors']:
+                    if selector.startswith('//'):
+                        from_input = safe_find_element(driver, By.XPATH, selector, 3)
+                    else:
+                        from_input = safe_find_element(driver, By.ID, selector, 3)
+                    if from_input:
+                        logger.info(f"Found from date input: {selector}")
+                        break
+                
+                # Find to date input
+                to_input = None
+                for selector in strategy['to_selectors']:
+                    if selector.startswith('//'):
+                        to_input = safe_find_element(driver, By.XPATH, selector, 3)
+                    else:
+                        to_input = safe_find_element(driver, By.ID, selector, 3)
+                    if to_input:
+                        logger.info(f"Found to date input: {selector}")
+                        break
+                
+                if from_input and to_input:
+                    # Set from date
+                    from_input.clear()
+                    time.sleep(0.5)
+                    from_input.send_keys(START_DATE)
+                    driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", from_input)
+                    logger.info(f"✅ Set from date: {START_DATE}")
+                    
+                    time.sleep(1)
+                    
+                    # Set to date
+                    to_input.clear()
+                    time.sleep(0.5)
+                    to_input.send_keys(END_DATE)
+                    driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", to_input)
+                    logger.info(f"✅ Set to date: {END_DATE}")
+                    
+                    time.sleep(2)
+                    
+                    # Try to find and click apply button
+                    for selector in strategy['apply_selectors']:
+                        apply_btn = None
+                        if selector.startswith('//'):
+                            apply_btn = safe_find_element(driver, By.XPATH, selector, 3)
+                        else:
+                            apply_btn = safe_find_element(driver, By.ID, selector, 3)
+                        
+                        if apply_btn and apply_btn.is_displayed():
+                            if safe_click(driver, apply_btn):
+                                logger.info(f"✅ Clicked apply button: {selector}")
+                                time.sleep(5)
+                                date_set_success = True
+                                break
+                    
+                    if date_set_success:
+                        break
+                        
+            except Exception as e:
+                logger.warning(f"Date strategy {strategy_num} failed: {str(e)}")
+                continue
+        
+        if date_set_success:
+            logger.info("✅ Date range set successfully")
+            debug_page_state(driver, "After Date Range Set")
+        else:
+            logger.warning("⚠️ Could not set date range with any strategy")
+            # Try alternative approach - look for calendar widgets
+            try_calendar_widget_approach(driver)
+        
+        return date_set_success
+        
+    except Exception as e:
+        logger.error(f"❌ Error setting date range: {str(e)}")
+        return False
+
+def try_calendar_widget_approach(driver):
+    """Try alternative calendar widget approach for date setting"""
+    try:
+        logger.info("🔄 Trying alternative calendar widget approach...")
+        
+        # Look for calendar icons or date picker triggers
+        calendar_triggers = driver.find_elements(By.XPATH, 
+            "//img[contains(@src, 'calendar')] | //span[contains(@class, 'calendar')] | " +
+            "//button[contains(@class, 'date')] | //div[contains(@class, 'datepicker')]")
+        
+        if calendar_triggers:
+            logger.info(f"Found {len(calendar_triggers)} calendar triggers")
+            for trigger in calendar_triggers:
+                if trigger.is_displayed():
+                    try:
+                        safe_click(driver, trigger)
+                        time.sleep(2)
+                        logger.info("Clicked calendar trigger")
+                        break
+                    except:
+                        continue
+        
+        # Look for any visible date inputs that might have appeared
+        all_inputs = driver.find_elements(By.XPATH, "//input[@type='text' or @type='date']")
+        date_inputs = []
+        
+        for inp in all_inputs:
+            if inp.is_displayed():
+                placeholder = inp.get_attribute('placeholder') or ''
+                name = inp.get_attribute('name') or ''
+                id_attr = inp.get_attribute('id') or ''
+                
+                if any(word in (placeholder + name + id_attr).lower() for word in ['date', 'from', 'to', 'start', 'end']):
+                    date_inputs.append(inp)
+        
+        if len(date_inputs) >= 2:
+            logger.info(f"Found {len(date_inputs)} potential date inputs")
+            # Set first input as from date, second as to date
+            try:
+                date_inputs[0].clear()
+                date_inputs[0].send_keys(START_DATE)
+                time.sleep(1)
+                
+                date_inputs[1].clear()
+                date_inputs[1].send_keys(END_DATE)
+                time.sleep(1)
+                
+                logger.info("✅ Set dates using alternative approach")
+                return True
+            except Exception as e:
+                logger.warning(f"Alternative date setting failed: {str(e)}")
+        
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Calendar widget approach failed: {str(e)}")
+        return False
+
 def find_navigation_elements(driver):
     """Find and analyze available navigation elements"""
     try:
@@ -510,7 +683,9 @@ def find_navigation_elements(driver):
             "//span[contains(@class, 'left-navigation-text')]",
             "//a[contains(@href, 'dashboard')]",
             "//span[contains(text(), 'Dashboard')]",
-            "//a[contains(text(), 'Dashboard')]"
+            "//a[contains(text(), 'Dashboard')]",
+            "//span[contains(text(), 'Reports')]",
+            "//a[contains(text(), 'Reports')]"
         ]
         
         found_elements = []
@@ -535,7 +710,7 @@ def find_navigation_elements(driver):
         return []
 
 def navigate_to_dashboard(driver):
-    """Enhanced dashboard navigation with better error handling"""
+    """Enhanced dashboard navigation with date range setting"""
     try:
         logger.info("🔹 Attempting to navigate to dashboard...")
         time.sleep(10)  # Wait for page to fully load
@@ -604,10 +779,15 @@ def navigate_to_dashboard(driver):
                 except Exception as e:
                     logger.warning(f"Direct navigation to {url} failed: {str(e)}")
         
-        debug_page_state(driver, "After Dashboard Navigation")
-        
+        # After successful navigation, try to set date range
         if dashboard_found:
             logger.info("✅ Dashboard navigation completed")
+            time.sleep(5)  # Wait for page to stabilize
+            
+            # Try to set date range
+            set_date_range(driver)
+            
+            debug_page_state(driver, "After Dashboard Navigation")
             return True
         else:
             logger.warning("⚠️ Dashboard navigation uncertain, continuing...")
@@ -645,7 +825,8 @@ def find_and_analyze_reports(driver):
                         download_elements = table.find_elements(By.XPATH, 
                             ".//img[contains(@src, 'excel') or contains(@src, 'xls') or contains(@src, 'download')] | " +
                             ".//a[contains(@href, 'excel') or contains(@href, 'xls') or contains(@href, 'download')] | " +
-                            ".//button[contains(text(), 'Download') or contains(text(), 'Export')]")
+                            ".//button[contains(text(), 'Download') or contains(text(), 'Export')] | " +
+                            ".//span[contains(text(), 'Excel') or contains(text(), 'CSV')]")
                         
                         if download_elements:
                             logger.info(f"  Found {len(download_elements)} download elements in table {i}")
@@ -659,7 +840,9 @@ def find_and_analyze_reports(driver):
         standalone_downloads = driver.find_elements(By.XPATH,
             "//img[contains(@src, 'excel') or contains(@src, 'xls') or contains(@src, 'download')] | " +
             "//a[contains(@href, 'excel') or contains(@href, 'xls') or contains(@href, 'download')] | " +
-            "//button[contains(text(), 'Download') or contains(text(), 'Export')]")
+            "//button[contains(text(), 'Download') or contains(text(), 'Export')] | " +
+            "//span[contains(text(), 'Excel') or contains(text(), 'CSV')] | " +
+            "//div[contains(@onclick, 'export') or contains(@onclick, 'download')]")
         
         logger.info(f"Found {len(standalone_downloads)} standalone download elements")
         
@@ -1014,7 +1197,7 @@ def main():
         # Continue with report extraction
         logger.info("🔹 Proceeding with report extraction...")
         
-        # Navigate to reports section
+        # Navigate to reports section and set date range
         navigate_to_dashboard(driver)
         
         # Analyze and attempt downloads
