@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 GOOGLE_SHEET_ID = "16blaF86ky_4Eu4BK8AyXajohzpMsSyDaoPPKGVDYqWw"
 SHEET_NAME = "DHL"
 SERVICE_ACCOUNT_FILE = 'service_account.json'
+
 # Download folder - try multiple common paths
 DOWNLOAD_FOLDER = os.path.expanduser("~/Downloads")  # User's Downloads folder
 if not os.path.exists(DOWNLOAD_FOLDER):
@@ -250,41 +251,6 @@ def click_generate_button(driver):
         logger.error(f"❌ Error clicking GENERATE: {str(e)}")
         return False
 
-def download_report(driver):
-    """Download the report by clicking Excel icon"""
-    try:
-        logger.info("🔹 Looking for download icon...")
-        
-        # Clear old files first
-        clear_download_folder()
-        
-        # Find Excel download icon
-        download_icon = wait_and_find(driver, By.ID, "xlsIcon")
-        if not download_icon:
-            # Try alternative selectors
-            download_icon = wait_and_find(driver, By.XPATH, "//img[contains(@src, 'download_Pixel_30.png')] | //img[contains(@src, 'excel')] | //img[contains(@id, 'xls')]")
-        
-        if download_icon:
-            download_icon.click()
-            logger.info("✅ Clicked download icon")
-            logger.info("⏳ Waiting for file download (15-20 seconds expected)...")
-            time.sleep(25)  # Wait longer for download (15-20s + buffer)
-            
-            # Check if file was downloaded in multiple possible locations
-            if check_for_new_download():
-                logger.info("✅ File downloaded successfully")
-                return True
-            else:
-                logger.warning("⚠️ No file downloaded, checking alternative download paths...")
-                return check_alternative_download_paths()
-        else:
-            logger.error("❌ Download icon not found")
-            return False
-            
-    except Exception as e:
-        logger.error(f"❌ Error downloading report: {str(e)}")
-        return False
-
 def clear_download_folder():
     """Clear old download files from multiple possible locations"""
     try:
@@ -321,6 +287,33 @@ def clear_download_folder():
             
     except Exception as e:
         logger.warning(f"Could not clear download folders: {str(e)}")
+
+def check_for_new_download():
+    """Check if new files were downloaded"""
+    try:
+        files = [f for f in os.listdir(DOWNLOAD_FOLDER) 
+                if f.endswith(('.xlsx', '.csv', '.xls')) and not f.startswith('~')]
+        
+        if files:
+            logger.info(f"Found {len(files)} files in download folder")
+            # Check if any file was created recently (last 2 minutes)
+            recent_files = []
+            current_time = time.time()
+            
+            for file in files:
+                file_path = os.path.join(DOWNLOAD_FOLDER, file)
+                file_time = os.path.getctime(file_path)
+                
+                if current_time - file_time < 120:  # 2 minutes = 120 seconds
+                    recent_files.append(file)
+                    logger.info(f"Recent file found: {file}")
+            
+            return len(recent_files) > 0
+        
+        return False
+    except Exception as e:
+        logger.warning(f"Error checking downloads: {str(e)}")
+        return False
 
 def check_alternative_download_paths():
     """Check for downloads in alternative paths"""
@@ -361,7 +354,6 @@ def check_alternative_download_paths():
                         latest_file = max(recent_files, key=os.path.getctime)
                         destination = os.path.join(DOWNLOAD_FOLDER, os.path.basename(latest_file))
                         
-                        import shutil
                         shutil.copy2(latest_file, destination)
                         logger.info(f"✅ Copied file from {latest_file} to {destination}")
                         return True
@@ -373,31 +365,39 @@ def check_alternative_download_paths():
         logger.error(f"Error checking alternative paths: {str(e)}")
         return False
 
-def check_for_new_download():
-    """Check if new files were downloaded"""
+def download_report(driver):
+    """Download the report by clicking Excel icon"""
     try:
-        files = [f for f in os.listdir(DOWNLOAD_FOLDER) 
-                if f.endswith(('.xlsx', '.csv', '.xls')) and not f.startswith('~')]
+        logger.info("🔹 Looking for download icon...")
         
-        if files:
-            logger.info(f"Found {len(files)} files in download folder")
-            # Check if any file was created recently (last 2 minutes)
-            recent_files = []
-            current_time = time.time()
-            
-            for file in files:
-                file_path = os.path.join(DOWNLOAD_FOLDER, file)
-                file_time = os.path.getctime(file_path)
-                
-                if current_time - file_time < 120:  # 2 minutes = 120 seconds
-                    recent_files.append(file)
-                    logger.info(f"Recent file found: {file}")
-            
-            return len(recent_files) > 0
+        # Clear old files first
+        clear_download_folder()
         
-        return False
+        # Find Excel download icon
+        download_icon = wait_and_find(driver, By.ID, "xlsIcon")
+        if not download_icon:
+            # Try alternative selectors
+            download_icon = wait_and_find(driver, By.XPATH, "//img[contains(@src, 'download_Pixel_30.png')] | //img[contains(@src, 'excel')] | //img[contains(@id, 'xls')]")
+        
+        if download_icon:
+            download_icon.click()
+            logger.info("✅ Clicked download icon")
+            logger.info("⏳ Waiting for file download (15-20 seconds expected)...")
+            time.sleep(25)  # Wait longer for download (15-20s + buffer)
+            
+            # Check if file was downloaded in multiple possible locations
+            if check_for_new_download():
+                logger.info("✅ File downloaded successfully")
+                return True
+            else:
+                logger.warning("⚠️ No file downloaded, checking alternative download paths...")
+                return check_alternative_download_paths()
+        else:
+            logger.error("❌ Download icon not found")
+            return False
+            
     except Exception as e:
-        logger.warning(f"Error checking downloads: {str(e)}")
+        logger.error(f"❌ Error downloading report: {str(e)}")
         return False
 
 def get_latest_file(folder_path, max_attempts=5, delay=5):
@@ -422,7 +422,41 @@ def get_latest_file(folder_path, max_attempts=5, delay=5):
                     path_files = [
                         os.path.join(path, f) for f in os.listdir(path)
                         if (f.endswith('.xlsx') or f.endswith('.csv') or f.endswith('.xls'))
-                        and not f.startswith('~
+                        and not f.startswith('~$')
+                        # Look for any Excel/CSV files
+                    ]
+                    all_files.extend(path_files)
+            
+            if not all_files:
+                logger.info(f"No Excel/CSV files found. Attempt {attempt + 1}/{max_attempts}")
+                time.sleep(delay)
+                continue
+            
+            # Get the most recent file
+            latest_file = max(all_files, key=os.path.getctime)
+            file_size = os.path.getsize(latest_file)
+            
+            logger.info(f"Found file: {latest_file} (Size: {file_size} bytes)")
+            
+            if file_size > 0:
+                # Copy to working directory if it's in a different location
+                if os.path.dirname(latest_file) != folder_path:
+                    destination = os.path.join(folder_path, os.path.basename(latest_file))
+                    shutil.copy2(latest_file, destination)
+                    logger.info(f"Copied file to working directory: {destination}")
+                    latest_file = destination
+                
+                logger.info(f"✅ Valid file found: {latest_file}")
+                return latest_file
+            
+            time.sleep(delay)
+                
+        except Exception as e:
+            logger.warning(f"Error checking files: {str(e)}")
+            time.sleep(delay)
+    
+    logger.warning("❌ No valid file found")
+    return None
 
 def process_data(file_path):
     """Process downloaded data"""
