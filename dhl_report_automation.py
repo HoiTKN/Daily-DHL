@@ -1,7 +1,7 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -582,20 +582,29 @@ def set_date_range(driver):
                         break
                 
                 if from_input and to_input:
-                    # Check if inputs are enabled
+                    # Check if inputs are enabled and their type
                     from_enabled = from_input.is_enabled()
                     to_enabled = to_input.is_enabled()
                     from_readonly = from_input.get_attribute('readonly')
                     to_readonly = to_input.get_attribute('readonly')
+                    from_class = from_input.get_attribute('class') or ''
+                    to_class = to_input.get_attribute('class') or ''
                     
-                    logger.info(f"From input - enabled: {from_enabled}, readonly: {from_readonly}")
-                    logger.info(f"To input - enabled: {to_enabled}, readonly: {to_readonly}")
+                    logger.info(f"From input - enabled: {from_enabled}, readonly: {from_readonly}, class: {from_class}")
+                    logger.info(f"To input - enabled: {to_enabled}, readonly: {to_readonly}, class: {to_class}")
                     
-                    if not from_enabled or from_readonly:
-                        logger.warning("From date input is disabled or readonly")
+                    # Check if these are datepicker widgets
+                    is_from_datepicker = 'datepicker' in from_class.lower() or 'hasDatepicker' in from_class
+                    is_to_datepicker = 'datepicker' in to_class.lower() or 'hasDatepicker' in to_class
+                    
+                    logger.info(f"Datepicker detection - From: {is_from_datepicker}, To: {is_to_datepicker}")
+                    
+                    # Skip only if inputs are disabled (not just readonly)
+                    if not from_enabled:
+                        logger.warning("From date input is disabled")
                         continue
-                    if not to_enabled or to_readonly:
-                        logger.warning("To date input is disabled or readonly")
+                    if not to_enabled:
+                        logger.warning("To date input is disabled") 
                         continue
                     
                     # Try different date formats
@@ -603,7 +612,7 @@ def set_date_range(driver):
                         logger.info(f"Trying date format {format_index + 1}: {start_date} - {end_date}")
                         
                         try:
-                            # Enhanced input method with multiple approaches
+                            # Enhanced input method with datepicker support
                             success = set_input_value_enhanced(driver, from_input, start_date)
                             if success:
                                 logger.info(f"✅ Set from date: {start_date}")
@@ -631,6 +640,10 @@ def set_date_range(driver):
                                     
                                     if date_set_success:
                                         break
+                                else:
+                                    logger.warning(f"Failed to set to date with format {format_index + 1}")
+                            else:
+                                logger.warning(f"Failed to set from date with format {format_index + 1}")
                         except Exception as format_e:
                             logger.warning(f"Date format {format_index + 1} failed: {str(format_e)}")
                             continue
@@ -703,9 +716,239 @@ def debug_date_inputs(driver):
         logger.warning(f"Error debugging date inputs: {str(e)}")
         return []
 
-def set_input_value_enhanced(driver, element, value):
-    """Enhanced input value setting with multiple methods"""
+def handle_datepicker_widget(driver, input_element, date_value):
+    """Handle calendar datepicker widgets specifically"""
     try:
+        input_id = input_element.get_attribute('id')
+        logger.info(f"🗓️ Handling datepicker widget: {input_id}")
+        
+        # Method 1: Try direct JavaScript value setting for readonly inputs
+        try:
+            logger.info("Trying direct JavaScript date setting...")
+            driver.execute_script("""
+                var element = arguments[0];
+                var date = arguments[1];
+                
+                // Set value directly
+                element.value = date;
+                
+                // Trigger comprehensive events for datepicker
+                element.dispatchEvent(new Event('focus', { bubbles: true }));
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+                element.dispatchEvent(new Event('blur', { bubbles: true }));
+                
+                // Try jQuery events if available
+                if (window.jQuery) {
+                    jQuery(element).trigger('change');
+                    jQuery(element).trigger('dateSelect');
+                    jQuery(element).datepicker && jQuery(element).datepicker('setDate', date);
+                }
+            """, input_element, date_value)
+            
+            # Verify if value was set
+            new_value = input_element.get_attribute('value')
+            if new_value and (date_value in new_value or new_value in date_value):
+                logger.info(f"✅ JavaScript method worked: {new_value}")
+                return True
+            else:
+                logger.info(f"Value after JS: {new_value}")
+                
+        except Exception as e:
+            logger.warning(f"Direct JS method failed: {str(e)}")
+        
+        # Method 2: Try to find and click calendar trigger button
+        try:
+            logger.info("Looking for calendar trigger button...")
+            
+            # Look for calendar triggers near this input
+            calendar_triggers = []
+            
+            # Strategy 1: Look for buttons/images with calendar-related attributes near this input
+            parent = input_element.find_element(By.XPATH, "..")
+            nearby_triggers = parent.find_elements(By.XPATH, 
+                ".//button[contains(@class, 'calendar') or contains(@class, 'date')] | " +
+                ".//img[contains(@src, 'calendar') or contains(@alt, 'calendar')] | " +
+                ".//span[contains(@class, 'calendar') or contains(@class, 'date')] | " +
+                ".//a[contains(@class, 'calendar')]")
+            
+            calendar_triggers.extend(nearby_triggers)
+            
+            # Strategy 2: Look for triggers with similar ID pattern
+            base_id = input_id.replace('_input', '').replace('_focus', '')
+            trigger_selectors = [
+                f"#{base_id}_trigger",
+                f"#{base_id}_button",
+                f"#{base_id}_calendar",
+                f"//img[@id='{base_id}_trigger']",
+                f"//button[@id='{base_id}_trigger']"
+            ]
+            
+            for selector in trigger_selectors:
+                try:
+                    if selector.startswith('//'):
+                        trigger = driver.find_element(By.XPATH, selector)
+                    else:
+                        trigger = driver.find_element(By.CSS_SELECTOR, selector)
+                    calendar_triggers.append(trigger)
+                except:
+                    continue
+            
+            # Try clicking calendar triggers
+            for trigger in calendar_triggers:
+                if trigger.is_displayed():
+                    logger.info(f"Found calendar trigger: {trigger.tag_name}")
+                    try:
+                        safe_click(driver, trigger)
+                        time.sleep(2)
+                        
+                        # After opening calendar, try to navigate to correct date
+                        if navigate_calendar_to_date(driver, date_value):
+                            return True
+                            
+                    except Exception as e:
+                        logger.warning(f"Calendar trigger click failed: {str(e)}")
+                        continue
+        
+        except Exception as e:
+            logger.warning(f"Calendar trigger method failed: {str(e)}")
+        
+        # Method 3: Try keyboard simulation
+        try:
+            logger.info("Trying keyboard simulation...")
+            input_element.click()
+            time.sleep(0.5)
+            
+            # Clear field and type date
+            input_element.send_keys(Keys.CONTROL + "a")
+            time.sleep(0.2)
+            input_element.send_keys(date_value)
+            time.sleep(0.5)
+            input_element.send_keys(Keys.ENTER)
+            
+            # Check if value was set
+            new_value = input_element.get_attribute('value')
+            if new_value and date_value in new_value:
+                logger.info(f"✅ Keyboard method worked: {new_value}")
+                return True
+                
+        except Exception as e:
+            logger.warning(f"Keyboard method failed: {str(e)}")
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"❌ All datepicker methods failed: {str(e)}")
+        return False
+
+def navigate_calendar_to_date(driver, target_date):
+    """Navigate calendar widget to specific date"""
+    try:
+        logger.info(f"🗓️ Navigating calendar to date: {target_date}")
+        
+        # Wait for calendar popup to appear
+        time.sleep(1)
+        
+        # Look for calendar popup elements
+        calendar_selectors = [
+            "//div[contains(@class, 'ui-datepicker')]",
+            "//div[contains(@class, 'calendar')]",
+            "//div[contains(@class, 'date-picker')]",
+            "//table[contains(@class, 'calendar')]"
+        ]
+        
+        calendar_popup = None
+        for selector in calendar_selectors:
+            try:
+                popup = driver.find_element(By.XPATH, selector)
+                if popup.is_displayed():
+                    calendar_popup = popup
+                    logger.info(f"Found calendar popup: {selector}")
+                    break
+            except:
+                continue
+        
+        if not calendar_popup:
+            logger.warning("No calendar popup found")
+            return False
+        
+        # Parse target date
+        try:
+            if "/" in target_date:
+                parts = target_date.split("/")
+                if len(parts) == 3:
+                    target_month = int(parts[0])
+                    target_day = int(parts[1]) 
+                    target_year = int(parts[2])
+                else:
+                    return False
+            else:
+                return False
+        except:
+            logger.warning(f"Could not parse date: {target_date}")
+            return False
+        
+        # Navigate to correct year/month
+        try:
+            # Look for year/month selectors
+            year_selector = calendar_popup.find_elements(By.XPATH, ".//select[contains(@class, 'year')] | .//select[@class='ui-datepicker-year']")
+            month_selector = calendar_popup.find_elements(By.XPATH, ".//select[contains(@class, 'month')] | .//select[@class='ui-datepicker-month']")
+            
+            # Set year if selector exists
+            if year_selector:
+                from selenium.webdriver.support.ui import Select
+                year_select = Select(year_selector[0])
+                try:
+                    year_select.select_by_value(str(target_year))
+                    time.sleep(0.5)
+                except:
+                    pass
+            
+            # Set month if selector exists  
+            if month_selector:
+                month_select = Select(month_selector[0])
+                try:
+                    month_select.select_by_value(str(target_month - 1))  # 0-based months
+                    time.sleep(0.5)
+                except:
+                    pass
+            
+            # Click on the specific day
+            day_links = calendar_popup.find_elements(By.XPATH, f".//a[text()='{target_day}'] | .//td[text()='{target_day}']")
+            for day_link in day_links:
+                if day_link.is_displayed():
+                    safe_click(driver, day_link)
+                    logger.info(f"✅ Clicked on day: {target_day}")
+                    time.sleep(1)
+                    return True
+        
+        except Exception as e:
+            logger.warning(f"Calendar navigation failed: {str(e)}")
+        
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Calendar navigation error: {str(e)}")
+        return False
+
+def set_input_value_enhanced(driver, element, value):
+    """Enhanced input value setting with datepicker widget support"""
+    try:
+        # Check if this is a datepicker widget
+        element_class = element.get_attribute('class') or ''
+        is_readonly = element.get_attribute('readonly') 
+        is_datepicker = 'datepicker' in element_class.lower() or 'hasDatepicker' in element_class
+        
+        logger.info(f"Element class: {element_class}")
+        logger.info(f"Is readonly: {is_readonly}")
+        logger.info(f"Is datepicker: {is_datepicker}")
+        
+        # If it's a datepicker widget, use specialized handler
+        if is_datepicker or is_readonly:
+            logger.info("🗓️ Detected datepicker widget - using specialized handler")
+            return handle_datepicker_widget(driver, element, value)
+        
+        # For regular inputs, use standard methods
         # Method 1: Standard clear and send_keys
         try:
             element.clear()
@@ -751,19 +994,6 @@ def set_input_value_enhanced(driver, element, value):
                 return True
         except Exception as e:
             logger.warning(f"Method 3 failed: {str(e)}")
-        
-        # Method 4: Character by character input
-        try:
-            element.clear()
-            time.sleep(0.2)
-            for char in value:
-                element.send_keys(char)
-                time.sleep(0.05)
-            
-            if element.get_attribute('value') == value:
-                return True
-        except Exception as e:
-            logger.warning(f"Method 4 failed: {str(e)}")
         
         return False
         
@@ -1098,6 +1328,142 @@ def try_advanced_report_date_filters(driver):
         logger.warning(f"Advanced report date filters failed: {str(e)}")
         return False
 
+def retry_dashboard_datepickers(driver):
+    """Retry datepicker interaction on dashboard with enhanced approach"""
+    try:
+        logger.info("🗓️ Retrying dashboard datepickers with focused approach...")
+        time.sleep(5)
+        
+        # Look specifically for the known datepicker inputs
+        from_input = safe_find_element(driver, By.ID, "dashboardForm:frmDate_input", 10)
+        to_input = safe_find_element(driver, By.ID, "dashboardForm:toDate_input", 10)
+        
+        if not from_input or not to_input:
+            logger.warning("Could not find dashboard datepicker inputs")
+            return False
+        
+        logger.info("Found dashboard datepicker inputs, attempting enhanced interaction...")
+        
+        # Try a more aggressive approach for datepickers
+        success = False
+        
+        # Method 1: Try triggering calendar popup via multiple events
+        try:
+            logger.info("Method 1: Triggering calendar popup events...")
+            
+            # Focus on from input and trigger events
+            driver.execute_script("""
+                var fromInput = arguments[0];
+                var toInput = arguments[1];
+                var fromDate = arguments[2];
+                var toDate = arguments[3];
+                
+                // Focus and trigger calendar events
+                fromInput.focus();
+                fromInput.click();
+                
+                // Try to trigger calendar open events
+                var events = ['mousedown', 'mouseup', 'click', 'focus'];
+                events.forEach(function(eventType) {
+                    var event = new Event(eventType, { bubbles: true });
+                    fromInput.dispatchEvent(event);
+                });
+                
+                // Set values directly
+                fromInput.value = fromDate;
+                toInput.value = toDate;
+                
+                // Trigger change events
+                fromInput.dispatchEvent(new Event('change', { bubbles: true }));
+                toInput.dispatchEvent(new Event('change', { bubbles: true }));
+                
+                // Try jQuery if available
+                if (window.jQuery) {
+                    jQuery(fromInput).trigger('change').trigger('blur');
+                    jQuery(toInput).trigger('change').trigger('blur');
+                    
+                    // Try jQuery datepicker methods
+                    if (jQuery.fn.datepicker) {
+                        try {
+                            jQuery(fromInput).datepicker('setDate', fromDate);
+                            jQuery(toInput).datepicker('setDate', toDate);
+                        } catch(e) {}
+                    }
+                }
+                
+                return {
+                    fromValue: fromInput.value,
+                    toValue: toInput.value
+                };
+            """, from_input, to_input, "01/01/2025", END_DATE)
+            
+            time.sleep(3)
+            
+            # Check if values were set
+            from_value = from_input.get_attribute('value')
+            to_value = to_input.get_attribute('value')
+            
+            logger.info(f"After JS method - From: {from_value}, To: {to_value}")
+            
+            if from_value and to_value and ("2025" in from_value or "01" in from_value):
+                success = True
+                logger.info("✅ Enhanced JS method appears to have worked")
+                
+        except Exception as e:
+            logger.warning(f"Enhanced JS method failed: {str(e)}")
+        
+        # Method 2: Try clicking around the inputs to trigger calendars
+        if not success:
+            try:
+                logger.info("Method 2: Trying to trigger calendar via clicking nearby elements...")
+                
+                # Click on the input and nearby elements
+                from_input.click()
+                time.sleep(1)
+                
+                # Look for calendar trigger elements near the inputs
+                parent = from_input.find_element(By.XPATH, "../..")
+                clickable_elements = parent.find_elements(By.XPATH, ".//button | .//img | .//span[@class]")
+                
+                for element in clickable_elements[:5]:  # Try first 5 elements
+                    try:
+                        if element.is_displayed():
+                            safe_click(driver, element)
+                            time.sleep(1)
+                    except:
+                        continue
+                
+            except Exception as e:
+                logger.warning(f"Calendar trigger method failed: {str(e)}")
+        
+        # Look for apply button and try clicking it
+        try:
+            apply_buttons = driver.find_elements(By.XPATH, 
+                "//button[contains(text(), 'Apply')] | //input[@value='Apply'] | " +
+                "//button[contains(@id, 'apply')] | //button[contains(@class, 'apply')]")
+            
+            for btn in apply_buttons:
+                if btn.is_displayed() and btn.is_enabled():
+                    logger.info("Trying to click apply button...")
+                    if safe_click(driver, btn):
+                        time.sleep(5)
+                        success = True
+                        break
+                        
+        except Exception as e:
+            logger.warning(f"Apply button click failed: {str(e)}")
+        
+        if success:
+            logger.info("✅ Dashboard datepicker retry succeeded")
+        else:
+            logger.warning("⚠️ Dashboard datepicker retry did not succeed")
+            
+        return success
+        
+    except Exception as e:
+        logger.error(f"❌ Dashboard datepicker retry failed: {str(e)}")
+        return False
+
 def navigate_to_dashboard(driver):
     """Enhanced dashboard navigation with multiple fallback strategies"""
     try:
@@ -1186,10 +1552,24 @@ def navigate_to_dashboard(driver):
             logger.info("🔄 Trying Advanced Reports approach...")
             date_success = try_advanced_reports_with_date_filter(driver)
         
+        # Strategy 4: Try going back to dashboard and re-trigger datepickers
+        if not date_success:
+            logger.info("🔄 Final attempt: Going back to dashboard for datepicker retry...")
+            try:
+                driver.get("https://ecommerceportal.dhl.com/Portal/pages/customer/statisticsdashboard.xhtml") 
+                time.sleep(8)
+                debug_page_state(driver, "Dashboard Retry")
+                date_success = retry_dashboard_datepickers(driver)
+            except Exception as e:
+                logger.warning(f"Dashboard retry failed: {str(e)}")
+        
         # Strategy 5: Final fallback - continue without date filter
         if not date_success:
             logger.warning("⚠️ All date setting strategies failed - continuing with default date range")
-            logger.info("💡 Data may be limited to recent period due to portal default settings")
+            logger.warning("📊 Data may be limited to recent period (last 7-30 days) due to portal defaults")
+            logger.info("💡 Detected readonly datepicker widgets but could not interact with calendar popups")
+            logger.info("🔧 Manual verification: Check if portal requires specific date format or interaction method")
+            logger.info("📋 Consider checking debug HTML files to analyze datepicker widget structure")
         
         debug_page_state(driver, "After All Navigation Attempts")
         return True  # Continue with report extraction regardless
@@ -1545,6 +1925,11 @@ def main():
     driver = None
     try:
         logger.info("🚀 Starting DHL report automation process...")
+        logger.info("📅 Enhanced date range setting with datepicker widget support:")
+        logger.info("   - Detects readonly datepicker inputs (hasDatepicker class)")
+        logger.info("   - JavaScript date setting for calendar widgets")
+        logger.info("   - Calendar popup navigation and date selection")
+        logger.info("   - Multiple fallback approaches for different widget types")
         
         # Validate environment first
         if not validate_environment():
