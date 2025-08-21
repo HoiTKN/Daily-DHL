@@ -1,5 +1,6 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
@@ -27,8 +28,8 @@ DEFAULT_TIMEOUT = 30
 PAGE_LOAD_TIMEOUT = 60
 
 # Date range settings - from start of year to current date
-START_DATE = "01/01/2025"
-END_DATE = datetime.now().strftime("%d/%m/%Y")  # Current date in DD/MM/YYYY format
+START_DATE = "01/01/2025"  # US format MM/DD/YYYY
+END_DATE = datetime.now().strftime("%m/%d/%Y")  # Current date in MM/DD/YYYY format
 
 # Get credentials from environment variables (GitHub secrets)
 DHL_USERNAME = os.getenv('DHL_USERNAME', 'truongcongdai4@gmail.com')
@@ -50,7 +51,7 @@ def validate_environment():
         
         logger.info(f"✅ Username: {DHL_USERNAME}")
         logger.info(f"✅ Password: {'*' * len(DHL_PASSWORD)} (length: {len(DHL_PASSWORD)})")
-        logger.info(f"✅ Date range: {START_DATE} to {END_DATE}")
+        logger.info(f"✅ Date range: 01/01/2025 to {END_DATE} (MM/DD/YYYY format)")
         
         # Check service account file
         if not os.path.exists(SERVICE_ACCOUNT_FILE):
@@ -501,9 +502,34 @@ def login_to_dhl(driver):
         return False
 
 def set_date_range(driver):
-    """Set date range for reports from start of year to current date"""
+    """
+    Set date range for reports from start of year to current date
+    
+    Enhanced approach with:
+    - Multiple date format attempts (US format prioritized)
+    - Input state validation (readonly/disabled checks)
+    - Multiple input methods (clear/sendkeys, JS, character-by-character)
+    - Proper event triggering for dynamic forms
+    """
     try:
         logger.info(f"🔹 Setting date range: {START_DATE} to {END_DATE}")
+        
+        # First, try to find all date inputs and analyze their state
+        debug_date_inputs(driver)
+        
+        # Different date formats to try (US format first as DHL likely uses US format)
+        current_date_us = datetime.now().strftime("%m/%d/%Y")
+        current_date_dash = datetime.now().strftime("%m-%d-%Y") 
+        current_date_iso = datetime.now().strftime("%Y-%m-%d")
+        current_date_short = datetime.now().strftime("%m/%d/%y")
+        
+        date_formats = [
+            ("01/01/2025", current_date_us),      # MM/DD/YYYY format (US format - try first)
+            ("01-01-2025", current_date_dash),    # MM-DD-YYYY format  
+            ("2025-01-01", current_date_iso),     # YYYY-MM-DD format
+            ("01/01/25", current_date_short),     # MM/DD/YY format
+            ("1/1/2025", current_date_us),        # Single digit format
+        ]
         
         # Multiple date input strategies for different portal layouts
         date_strategies = [
@@ -556,38 +582,58 @@ def set_date_range(driver):
                         break
                 
                 if from_input and to_input:
-                    # Set from date
-                    from_input.clear()
-                    time.sleep(0.5)
-                    from_input.send_keys(START_DATE)
-                    driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", from_input)
-                    logger.info(f"✅ Set from date: {START_DATE}")
+                    # Check if inputs are enabled
+                    from_enabled = from_input.is_enabled()
+                    to_enabled = to_input.is_enabled()
+                    from_readonly = from_input.get_attribute('readonly')
+                    to_readonly = to_input.get_attribute('readonly')
                     
-                    time.sleep(1)
+                    logger.info(f"From input - enabled: {from_enabled}, readonly: {from_readonly}")
+                    logger.info(f"To input - enabled: {to_enabled}, readonly: {to_readonly}")
                     
-                    # Set to date
-                    to_input.clear()
-                    time.sleep(0.5)
-                    to_input.send_keys(END_DATE)
-                    driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", to_input)
-                    logger.info(f"✅ Set to date: {END_DATE}")
+                    if not from_enabled or from_readonly:
+                        logger.warning("From date input is disabled or readonly")
+                        continue
+                    if not to_enabled or to_readonly:
+                        logger.warning("To date input is disabled or readonly")
+                        continue
                     
-                    time.sleep(2)
-                    
-                    # Try to find and click apply button
-                    for selector in strategy['apply_selectors']:
-                        apply_btn = None
-                        if selector.startswith('//'):
-                            apply_btn = safe_find_element(driver, By.XPATH, selector, 3)
-                        else:
-                            apply_btn = safe_find_element(driver, By.ID, selector, 3)
+                    # Try different date formats
+                    for format_index, (start_date, end_date) in enumerate(date_formats):
+                        logger.info(f"Trying date format {format_index + 1}: {start_date} - {end_date}")
                         
-                        if apply_btn and apply_btn.is_displayed():
-                            if safe_click(driver, apply_btn):
-                                logger.info(f"✅ Clicked apply button: {selector}")
-                                time.sleep(5)
-                                date_set_success = True
-                                break
+                        try:
+                            # Enhanced input method with multiple approaches
+                            success = set_input_value_enhanced(driver, from_input, start_date)
+                            if success:
+                                logger.info(f"✅ Set from date: {start_date}")
+                                time.sleep(1)
+                                
+                                success = set_input_value_enhanced(driver, to_input, end_date)
+                                if success:
+                                    logger.info(f"✅ Set to date: {end_date}")
+                                    time.sleep(2)
+                                    
+                                    # Try to find and click apply button
+                                    for selector in strategy['apply_selectors']:
+                                        apply_btn = None
+                                        if selector.startswith('//'):
+                                            apply_btn = safe_find_element(driver, By.XPATH, selector, 3)
+                                        else:
+                                            apply_btn = safe_find_element(driver, By.ID, selector, 3)
+                                        
+                                        if apply_btn and apply_btn.is_displayed():
+                                            if safe_click(driver, apply_btn):
+                                                logger.info(f"✅ Clicked apply button: {selector}")
+                                                time.sleep(5)
+                                                date_set_success = True
+                                                break
+                                    
+                                    if date_set_success:
+                                        break
+                        except Exception as format_e:
+                            logger.warning(f"Date format {format_index + 1} failed: {str(format_e)}")
+                            continue
                     
                     if date_set_success:
                         break
@@ -602,12 +648,162 @@ def set_date_range(driver):
         else:
             logger.warning("⚠️ Could not set date range with any strategy")
             # Try alternative approach - look for calendar widgets
-            try_calendar_widget_approach(driver)
+            try_advanced_date_setting(driver)
         
         return date_set_success
         
     except Exception as e:
         logger.error(f"❌ Error setting date range: {str(e)}")
+        return False
+
+def debug_date_inputs(driver):
+    """Debug all date inputs on the page"""
+    try:
+        logger.info("🔍 Debugging all date inputs...")
+        
+        # Find all potential date inputs
+        all_inputs = driver.find_elements(By.XPATH, "//input")
+        date_related_inputs = []
+        
+        for inp in all_inputs:
+            if inp.is_displayed():
+                input_type = inp.get_attribute('type') or ''
+                input_id = inp.get_attribute('id') or ''
+                input_name = inp.get_attribute('name') or ''
+                input_class = inp.get_attribute('class') or ''
+                placeholder = inp.get_attribute('placeholder') or ''
+                readonly = inp.get_attribute('readonly')
+                disabled = inp.get_attribute('disabled')
+                enabled = inp.is_enabled()
+                
+                if (input_type in ['date', 'text'] or 
+                    any(word in (input_id + input_name + input_class + placeholder).lower() 
+                        for word in ['date', 'from', 'to', 'start', 'end', 'calendar'])):
+                    
+                    date_related_inputs.append({
+                        'element': inp,
+                        'id': input_id,
+                        'name': input_name,
+                        'type': input_type,
+                        'class': input_class,
+                        'placeholder': placeholder,
+                        'readonly': readonly,
+                        'disabled': disabled,
+                        'enabled': enabled
+                    })
+        
+        logger.info(f"Found {len(date_related_inputs)} date-related inputs:")
+        for i, inp_info in enumerate(date_related_inputs):
+            logger.info(f"  Input {i}: ID={inp_info['id']}, Type={inp_info['type']}, "
+                       f"Enabled={inp_info['enabled']}, Readonly={inp_info['readonly']}")
+        
+        return date_related_inputs
+        
+    except Exception as e:
+        logger.warning(f"Error debugging date inputs: {str(e)}")
+        return []
+
+def set_input_value_enhanced(driver, element, value):
+    """Enhanced input value setting with multiple methods"""
+    try:
+        # Method 1: Standard clear and send_keys
+        try:
+            element.clear()
+            time.sleep(0.2)
+            element.send_keys(value)
+            time.sleep(0.2)
+            # Trigger change events
+            driver.execute_script("""
+                arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+            """, element)
+            
+            # Verify value was set
+            if element.get_attribute('value') == value:
+                return True
+        except Exception as e:
+            logger.warning(f"Method 1 failed: {str(e)}")
+        
+        # Method 2: JavaScript value setting
+        try:
+            driver.execute_script("arguments[0].value = arguments[1];", element, value)
+            driver.execute_script("""
+                arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+            """, element)
+            
+            if element.get_attribute('value') == value:
+                return True
+        except Exception as e:
+            logger.warning(f"Method 2 failed: {str(e)}")
+        
+        # Method 3: Focus, select all, then type
+        try:
+            element.click()
+            time.sleep(0.1)
+            element.send_keys(Keys.CONTROL + "a")
+            time.sleep(0.1)
+            element.send_keys(value)
+            time.sleep(0.2)
+            
+            if element.get_attribute('value') == value:
+                return True
+        except Exception as e:
+            logger.warning(f"Method 3 failed: {str(e)}")
+        
+        # Method 4: Character by character input
+        try:
+            element.clear()
+            time.sleep(0.2)
+            for char in value:
+                element.send_keys(char)
+                time.sleep(0.05)
+            
+            if element.get_attribute('value') == value:
+                return True
+        except Exception as e:
+            logger.warning(f"Method 4 failed: {str(e)}")
+        
+        return False
+        
+    except Exception as e:
+        logger.warning(f"All input methods failed: {str(e)}")
+        return False
+
+def try_advanced_date_setting(driver):
+    """Advanced date setting approach with calendar widgets and dropdowns"""
+    try:
+        logger.info("🔄 Trying advanced date setting approaches...")
+        
+        # Look for date range presets or quick select options
+        preset_selectors = [
+            "//button[contains(text(), 'This Year')]",
+            "//button[contains(text(), 'Year to Date')]",
+            "//button[contains(text(), 'YTD')]",
+            "//option[contains(text(), '2025')]",
+            "//select[contains(@name, 'year')]",
+            "//select[contains(@id, 'year')]"
+        ]
+        
+        for selector in preset_selectors:
+            try:
+                elements = driver.find_elements(By.XPATH, selector)
+                for element in elements:
+                    if element.is_displayed():
+                        logger.info(f"Found preset option: {element.text}")
+                        if safe_click(driver, element):
+                            logger.info("✅ Clicked date preset")
+                            time.sleep(3)
+                            return True
+            except Exception as e:
+                logger.warning(f"Preset selector {selector} failed: {str(e)}")
+        
+        # Try calendar widget approach
+        return try_calendar_widget_approach(driver)
+        
+    except Exception as e:
+        logger.warning(f"Advanced date setting failed: {str(e)}")
         return False
 
 def try_calendar_widget_approach(driver):
@@ -709,8 +905,201 @@ def find_navigation_elements(driver):
         logger.error(f"Error analyzing navigation: {str(e)}")
         return []
 
+def navigate_to_reports_section(driver):
+    """Navigate specifically to Reports section for date range setting"""
+    try:
+        logger.info("🔹 Trying to navigate to Reports section...")
+        
+        # Try to find Reports navigation
+        reports_selectors = [
+            "//span[contains(text(), 'REPORTS')]",
+            "//span[contains(text(), 'Reports')]", 
+            "//a[contains(text(), 'Reports')]",
+            "//a[contains(@href, 'report')]",
+            "//span[@class='left-navigation-text' and contains(text(), 'REPORTS')]"
+        ]
+        
+        reports_found = False
+        for selector in reports_selectors:
+            try:
+                elements = driver.find_elements(By.XPATH, selector)
+                logger.info(f"Found {len(elements)} reports elements with selector: {selector}")
+                
+                for element in elements:
+                    if element.is_displayed():
+                        logger.info(f"Trying to click reports element: {element.text}")
+                        
+                        for method in ["normal", "js", "action"]:
+                            if safe_click(driver, element, method):
+                                logger.info(f"✅ Clicked reports using {method}")
+                                reports_found = True
+                                time.sleep(5)
+                                break
+                        
+                        if reports_found:
+                            break
+                
+                if reports_found:
+                    break
+                    
+            except Exception as e:
+                logger.warning(f"Error with reports selector {selector}: {str(e)}")
+        
+        if not reports_found:
+            # Try direct URL navigation to reports
+            reports_urls = [
+                "https://ecommerceportal.dhl.com/Portal/pages/customer/reports.xhtml",
+                "https://ecommerceportal.dhl.com/Portal/pages/reports/reports.xhtml", 
+                "https://ecommerceportal.dhl.com/Portal/pages/customer/advancedreport.xhtml"
+            ]
+            
+            for url in reports_urls:
+                try:
+                    logger.info(f"Trying direct navigation to reports: {url}")
+                    driver.get(url)
+                    time.sleep(8)
+                    
+                    if "error" not in driver.current_url.lower() and "login" not in driver.current_url.lower():
+                        logger.info(f"✅ Successfully navigated to reports: {url}")
+                        reports_found = True
+                        break
+                except Exception as e:
+                    logger.warning(f"Direct navigation to {url} failed: {str(e)}")
+        
+        if reports_found:
+            debug_page_state(driver, "After Reports Navigation")
+            # Try setting date range in reports section
+            return set_date_range(driver)
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"❌ Reports navigation failed: {str(e)}")
+        return False
+
+def try_advanced_reports_with_date_filter(driver):
+    """Try to access Advanced Reports with date filtering capabilities"""
+    try:
+        logger.info("🔹 Trying Advanced Reports with date filters...")
+        
+        # Look for Advanced Report link specifically
+        advanced_report_selectors = [
+            "//a[contains(text(), 'Advanced Report')]",
+            "//span[contains(text(), 'Advanced Report')]",
+            "//div[contains(text(), 'Advanced Report')]",
+            "//a[contains(@href, 'advanced')]",
+            "//a[contains(@href, 'report')]//span[contains(text(), 'Advanced')]"
+        ]
+        
+        for selector in advanced_report_selectors:
+            try:
+                elements = driver.find_elements(By.XPATH, selector)
+                if elements:
+                    logger.info(f"Found {len(elements)} advanced report elements")
+                    for element in elements:
+                        if element.is_displayed():
+                            logger.info(f"Clicking advanced report: {element.text}")
+                            if safe_click(driver, element):
+                                time.sleep(8)
+                                logger.info("✅ Navigated to Advanced Reports")
+                                
+                                # Try setting date range in advanced reports
+                                debug_page_state(driver, "Advanced Reports Page")
+                                
+                                # Look for date filters in advanced reports
+                                if try_advanced_report_date_filters(driver):
+                                    return True
+                                break
+            except Exception as e:
+                logger.warning(f"Advanced report selector failed: {str(e)}")
+        
+        # Try direct URLs for advanced reports
+        advanced_urls = [
+            "https://ecommerceportal.dhl.com/Portal/pages/customer/advancedreport.xhtml",
+            "https://ecommerceportal.dhl.com/Portal/pages/reports/advancedreport.xhtml",
+            "https://ecommerceportal.dhl.com/Portal/pages/shipment/reports.xhtml"
+        ]
+        
+        for url in advanced_urls:
+            try:
+                logger.info(f"Trying direct advanced reports URL: {url}")
+                driver.get(url)
+                time.sleep(8)
+                
+                if "error" not in driver.current_url.lower():
+                    logger.info(f"✅ Accessed advanced reports: {url}")
+                    debug_page_state(driver, f"Advanced Reports - {url}")
+                    
+                    if try_advanced_report_date_filters(driver):
+                        return True
+                        
+            except Exception as e:
+                logger.warning(f"Direct advanced URL failed: {str(e)}")
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Advanced reports approach failed: {str(e)}")
+        return False
+
+def try_advanced_report_date_filters(driver):
+    """Try to set date filters in advanced reports page"""
+    try:
+        logger.info("🔹 Setting date filters in advanced reports...")
+        
+        # Wait for page to load
+        time.sleep(5)
+        
+        # Look for date filter sections
+        date_filter_sections = driver.find_elements(By.XPATH, 
+            "//div[contains(@class, 'filter')] | //div[contains(@class, 'date')] | " +
+            "//fieldset[contains(., 'Date')] | //div[contains(., 'Date Range')]")
+        
+        if date_filter_sections:
+            logger.info(f"Found {len(date_filter_sections)} date filter sections")
+            
+            # Try to find date inputs within these sections
+            for section in date_filter_sections:
+                try:
+                    date_inputs = section.find_elements(By.XPATH, ".//input[@type='text' or @type='date']")
+                    if len(date_inputs) >= 2:
+                        logger.info(f"Found date inputs in section: {len(date_inputs)}")
+                        
+                        # Try to set from and to dates
+                        from_input = date_inputs[0]
+                        to_input = date_inputs[1]
+                        
+                        if set_input_value_enhanced(driver, from_input, "01/01/2025"):
+                            logger.info("✅ Set from date in advanced reports")
+                            if set_input_value_enhanced(driver, to_input, END_DATE):
+                                logger.info("✅ Set to date in advanced reports")
+                                
+                                # Look for apply/submit button in this section
+                                apply_buttons = section.find_elements(By.XPATH, 
+                                    ".//button | .//input[@type='submit'] | .//a[contains(@class, 'button')]")
+                                
+                                for btn in apply_buttons:
+                                    if btn.is_displayed() and btn.is_enabled():
+                                        if safe_click(driver, btn):
+                                            logger.info("✅ Applied date filter in advanced reports")
+                                            time.sleep(5)
+                                            return True
+                                
+                                return True  # Date set even if no apply button
+                                
+                except Exception as e:
+                    logger.warning(f"Error with date filter section: {str(e)}")
+                    continue
+        
+        # Try generic date setting approach
+        return set_date_range(driver)
+        
+    except Exception as e:
+        logger.warning(f"Advanced report date filters failed: {str(e)}")
+        return False
+
 def navigate_to_dashboard(driver):
-    """Enhanced dashboard navigation with date range setting"""
+    """Enhanced dashboard navigation with multiple fallback strategies"""
     try:
         logger.info("🔹 Attempting to navigate to dashboard...")
         time.sleep(10)  # Wait for page to fully load
@@ -720,7 +1109,7 @@ def navigate_to_dashboard(driver):
         # Analyze available navigation
         nav_elements = find_navigation_elements(driver)
         
-        # Try to find dashboard link
+        # Strategy 1: Try Dashboard first
         dashboard_found = False
         dashboard_selectors = [
             "//span[@class='left-navigation-text' and contains(text(), 'Dashboard')]",
@@ -760,9 +1149,8 @@ def navigate_to_dashboard(driver):
         if not dashboard_found:
             logger.info("🔄 Dashboard link not found, trying direct URL navigation...")
             dashboard_urls = [
-                "https://ecommerceportal.dhl.com/Portal/pages/dashboard/dashboard.xhtml",
-                "https://ecommerceportal.dhl.com/Portal/pages/shipment/shipmentList.xhtml",
-                "https://ecommerceportal.dhl.com/Portal/pages/reports/reports.xhtml"
+                "https://ecommerceportal.dhl.com/Portal/pages/customer/statisticsdashboard.xhtml",
+                "https://ecommerceportal.dhl.com/Portal/pages/dashboard/dashboard.xhtml"
             ]
             
             for url in dashboard_urls:
@@ -779,19 +1167,32 @@ def navigate_to_dashboard(driver):
                 except Exception as e:
                     logger.warning(f"Direct navigation to {url} failed: {str(e)}")
         
-        # After successful navigation, try to set date range
+        # Strategy 2: Try date setting on dashboard
+        date_success = False
         if dashboard_found:
             logger.info("✅ Dashboard navigation completed")
             time.sleep(5)  # Wait for page to stabilize
             
             # Try to set date range
-            set_date_range(driver)
-            
-            debug_page_state(driver, "After Dashboard Navigation")
-            return True
-        else:
-            logger.warning("⚠️ Dashboard navigation uncertain, continuing...")
-            return True  # Continue even if uncertain
+            date_success = set_date_range(driver)
+        
+        # Strategy 3: If date setting failed, try Reports section
+        if not date_success:
+            logger.info("🔄 Date setting failed, trying Reports section...")
+            date_success = navigate_to_reports_section(driver)
+        
+        # Strategy 4: If still failed, try Advanced Reports
+        if not date_success:
+            logger.info("🔄 Trying Advanced Reports approach...")
+            date_success = try_advanced_reports_with_date_filter(driver)
+        
+        # Strategy 5: Final fallback - continue without date filter
+        if not date_success:
+            logger.warning("⚠️ All date setting strategies failed - continuing with default date range")
+            logger.info("💡 Data may be limited to recent period due to portal default settings")
+        
+        debug_page_state(driver, "After All Navigation Attempts")
+        return True  # Continue with report extraction regardless
             
     except Exception as e:
         logger.error(f"❌ Dashboard navigation failed: {str(e)}")
