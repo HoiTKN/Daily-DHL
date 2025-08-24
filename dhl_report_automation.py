@@ -507,7 +507,7 @@ def process_data(file_path):
         
         # Map Order ID from Consignee Name
         if 'Consignee Name' in df.columns:
-            processed_df['Order ID'] = df['Consignee Name'].astype(str).str.extract(r'(\d{7})')[0].fillna('')
+            processed_df['Order ID'] = df['Consignee Name'].fillna('').astype(str).str.extract(r'(\d{7})')[0].fillna('')
         else:
             processed_df['Order ID'] = ''
         
@@ -515,7 +515,7 @@ def process_data(file_path):
         tracking_cols = ['Tracking ID', 'Tracking Number', 'AWB', 'Waybill Number']
         for col in tracking_cols:
             if col in df.columns:
-                processed_df['Tracking Number'] = df[col].fillna('')
+                processed_df['Tracking Number'] = df[col].fillna('').astype(str)
                 break
         else:
             processed_df['Tracking Number'] = ''
@@ -542,12 +542,17 @@ def process_data(file_path):
         status_cols = ['Last Status', 'Status', 'Current Status', 'Shipment Status']
         for col in status_cols:
             if col in df.columns:
-                processed_df['Status'] = df[col].fillna('')
+                processed_df['Status'] = df[col].fillna('').astype(str)
                 break
         else:
             processed_df['Status'] = ''
         
         # FIX 2: Chỉ giữ tracking numbers hợp lệ (>= 13 digits)
+        # Ensure all string columns are properly converted
+        processed_df['Order ID'] = processed_df['Order ID'].astype(str)
+        processed_df['Tracking Number'] = processed_df['Tracking Number'].astype(str)
+        processed_df['Status'] = processed_df['Status'].astype(str)
+        
         initial_count = len(processed_df)
         processed_df = processed_df[processed_df['Tracking Number'].str.len() >= 13].copy()
         final_count = len(processed_df)
