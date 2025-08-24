@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 import pandas as pd
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import numpy as np
 import logging
@@ -26,20 +26,25 @@ SHEET_NAME = "DHL"
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 
 # Download folder - try multiple common paths
-DOWNLOAD_FOLDER = os.path.expanduser("~/Downloads")  # User's Downloads folder
+DOWNLOAD_FOLDER = os.path.expanduser("~/Downloads")
 if not os.path.exists(DOWNLOAD_FOLDER):
-    DOWNLOAD_FOLDER = os.getcwd()  # Fallback to current directory
+    DOWNLOAD_FOLDER = os.getcwd()
 
-# Date range - DD-MM-YYYY format for DHL portal
-START_DATE = "01-01-2025"
-END_DATE = datetime.now().strftime("%d-%m-%Y")
+# Date range configuration - Chia nhỏ để tránh quá tải
+# Chỉ lấy 30 ngày gần nhất thay vì từ đầu năm
+END_DATE = datetime.now()
+START_DATE = END_DATE - timedelta(days=30)  # Chỉ lấy 30 ngày gần nhất
+
+# Format for DHL portal
+START_DATE_STR = START_DATE.strftime("%d-%m-%Y")
+END_DATE_STR = END_DATE.strftime("%d-%m-%Y")
 
 # Credentials
 DHL_USERNAME = os.getenv('DHL_USERNAME', 'truongcongdai4@gmail.com')
 DHL_PASSWORD = os.getenv('DHL_PASSWORD', '@Thavi035@')
 
 def setup_chrome_driver():
-    """Setup Chrome driver"""
+    """Setup Chrome driver with better error handling"""
     try:
         chrome_options = Options()
         chrome_options.add_argument('--headless')
@@ -47,6 +52,9 @@ def setup_chrome_driver():
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-web-security')
+        chrome_options.add_argument('--allow-running-insecure-content')
+        chrome_options.add_argument('--ignore-certificate-errors')
         
         prefs = {
             "download.default_directory": DOWNLOAD_FOLDER,
@@ -76,185 +84,393 @@ def setup_chrome_driver():
         logger.error(f"❌ Chrome driver setup failed: {str(e)}")
         raise
 
-def wait_and_find(driver, by, value, timeout=15):
-    """Wait for element and return it"""
+def take_debug_screenshot(driver, filename):
+    """Take screenshot for debugging"""
     try:
-        return WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((by, value))
-        )
-    except TimeoutException:
-        logger.error(f"Element not found: {by}={value}")
+        screenshot_path = os.path.join(DOWNLOAD_FOLDER, f"debug_{filename}_{int(time.time())}.png")
+        driver.save_screenshot(screenshot_path)
+        logger.info(f"📸 Screenshot saved: {screenshot_path}")
+        return screenshot_path
+    except Exception as e:
+        logger.warning(f"Could not take screenshot: {str(e)}")
         return None
 
+def wait_and_find_multiple(driver, selectors, timeout=15):
+    """Try multiple selectors until one works"""
+    for by, value in selectors:
+        try:
+            element = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((by, value))
+            )
+            logger.info(f"✅ Found element with: {by}={value}")
+            return element
+        except TimeoutException:
+            logger.warning(f"⚠️ Element not found: {by}={value}")
+            continue
+    
+    logger.error(f"❌ No elements found from {len(selectors)} selectors")
+    return None
+
 def login_to_dhl(driver):
-    """Login to DHL portal"""
+    """Login to DHL portal with improved error handling"""
     try:
         logger.info("🔹 Logging into DHL portal...")
         
         # Go to login page
         driver.get("https://ecommerceportal.dhl.com/Portal/pages/login/userlogin.xhtml")
-        time.sleep(5)
+        time.sleep(8)  # Longer wait for page load
         
-        # Find and fill username
-        username_field = wait_and_find(driver, By.ID, "email1")
+        # Take screenshot for debugging
+        take_debug_screenshot(driver, "login_page")
+        
+        # Find and fill username with multiple selectors
+        username_selectors = [
+            (By.ID, "email1"),
+            (By.NAME, "email"),
+            (By.XPATH, "//input[@type='email']"),
+            (By.XPATH, "//input[contains(@placeholder, 'mail')]")
+        ]
+        
+        username_field = wait_and_find_multiple(driver, username_selectors)
         if not username_field:
             return False
         
         username_field.clear()
         username_field.send_keys(DHL_USERNAME)
         logger.info("✅ Username entered")
+        time.sleep(2)
         
-        # Find and fill password
-        password_field = wait_and_find(driver, By.NAME, "j_password")
+        # Find and fill password with multiple selectors
+        password_selectors = [
+            (By.NAME, "j_password"),
+            (By.ID, "j_password"),
+            (By.XPATH, "//input[@type='password']"),
+            (By.XPATH, "//input[contains(@name, 'password')]")
+        ]
+        
+        password_field = wait_and_find_multiple(driver, password_selectors)
         if not password_field:
             return False
         
         password_field.clear()
         password_field.send_keys(DHL_PASSWORD)
         logger.info("✅ Password entered")
+        time.sleep(2)
         
-        # Click login button
-        login_button = wait_and_find(driver, By.CLASS_NAME, "btn-login")
+        # Click login button with multiple selectors
+        login_selectors = [
+            (By.CLASS_NAME, "btn-login"),
+            (By.XPATH, "//button[contains(text(), 'Login')]"),
+            (By.XPATH, "//input[@type='submit']"),
+            (By.XPATH, "//button[@type='submit']")
+        ]
+        
+        login_button = wait_and_find_multiple(driver, login_selectors)
         if not login_button:
             return False
         
         login_button.click()
         logger.info("✅ Login button clicked")
         
-        # Wait for redirect
-        time.sleep(10)
+        # Wait longer for redirect
+        time.sleep(15)
+        
+        # Take screenshot after login
+        take_debug_screenshot(driver, "after_login")
         
         # Check if login successful
-        if "login" not in driver.current_url.lower():
+        current_url = driver.current_url.lower()
+        if "login" not in current_url or "dashboard" in current_url or "portal" in current_url:
             logger.info("✅ Login successful")
             return True
         else:
-            logger.error("❌ Login failed")
+            logger.error(f"❌ Login failed. Current URL: {driver.current_url}")
             return False
             
     except Exception as e:
         logger.error(f"❌ Login error: {str(e)}")
+        take_debug_screenshot(driver, "login_error")
         return False
 
 def navigate_to_dashboard(driver):
-    """Navigate to dashboard"""
+    """Navigate to dashboard with improved selectors"""
     try:
         logger.info("🔹 Navigating to dashboard...")
-        time.sleep(5)
-        
-        # Find dashboard link
-        dashboard_link = wait_and_find(driver, By.XPATH, "//span[contains(@class, 'left-navigation-text') and contains(text(), 'Dashboard')]")
-        if not dashboard_link:
-            logger.error("❌ Dashboard link not found")
-            return False
-        
-        dashboard_link.click()
-        logger.info("✅ Clicked dashboard")
         time.sleep(8)
         
-        return True
+        # Take screenshot to see current state
+        take_debug_screenshot(driver, "before_dashboard")
+        
+        # Multiple dashboard selectors to try
+        dashboard_selectors = [
+            # Original selector
+            (By.XPATH, "//span[contains(@class, 'left-navigation-text') and contains(text(), 'Dashboard')]"),
+            # Alternative text selectors
+            (By.XPATH, "//span[contains(text(), 'Dashboard')]"),
+            (By.XPATH, "//a[contains(text(), 'Dashboard')]"),
+            (By.LINK_TEXT, "Dashboard"),
+            (By.PARTIAL_LINK_TEXT, "Dashboard"),
+            # ID selectors
+            (By.ID, "dashboard"),
+            (By.ID, "Dashboard"),
+            # Class selectors
+            (By.CLASS_NAME, "dashboard-link"),
+            (By.CLASS_NAME, "nav-dashboard"),
+            # Generic navigation selectors
+            (By.XPATH, "//li[contains(@class, 'nav')]//*[contains(text(), 'Dashboard')]"),
+            (By.XPATH, "//div[contains(@class, 'menu')]//*[contains(text(), 'Dashboard')]"),
+            (By.XPATH, "//nav//*[contains(text(), 'Dashboard')]"),
+            # Fallback - any element with Dashboard text
+            (By.XPATH, "//*[contains(text(), 'Dashboard')]"),
+        ]
+        
+        dashboard_link = wait_and_find_multiple(driver, dashboard_selectors, timeout=20)
+        
+        if dashboard_link:
+            # Scroll element into view
+            driver.execute_script("arguments[0].scrollIntoView();", dashboard_link)
+            time.sleep(2)
+            
+            # Try to click
+            try:
+                dashboard_link.click()
+            except Exception as e:
+                # If normal click fails, try JavaScript click
+                logger.warning(f"Normal click failed: {str(e)}, trying JavaScript click")
+                driver.execute_script("arguments[0].click();", dashboard_link)
+            
+            logger.info("✅ Clicked dashboard")
+            time.sleep(10)
+            
+            # Take screenshot after clicking
+            take_debug_screenshot(driver, "after_dashboard_click")
+            return True
+        else:
+            logger.error("❌ Dashboard link not found with any selector")
+            
+            # Log current page source for debugging
+            logger.info("📄 Current page title: " + driver.title)
+            logger.info("📄 Current URL: " + driver.current_url)
+            
+            # Try to find any navigation elements
+            nav_elements = driver.find_elements(By.XPATH, "//*[contains(@class, 'nav') or contains(@class, 'menu')]")
+            logger.info(f"Found {len(nav_elements)} navigation elements")
+            
+            return False
         
     except Exception as e:
         logger.error(f"❌ Dashboard navigation error: {str(e)}")
+        take_debug_screenshot(driver, "dashboard_error")
         return False
 
+def set_date_range_with_retry(driver, max_retries=3):
+    """Set date range with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"🔹 Setting date range (attempt {attempt + 1}/{max_retries}): {START_DATE_STR} to {END_DATE_STR}")
+            
+            # Wait for page to load completely
+            time.sleep(5)
+            
+            # Take screenshot
+            take_debug_screenshot(driver, f"date_range_attempt_{attempt + 1}")
+            
+            # Set start date
+            from_success = set_datepicker_value(driver, "dashboardForm:frmDate_input", START_DATE_STR)
+            time.sleep(2)
+            
+            # Set end date  
+            to_success = set_datepicker_value(driver, "dashboardForm:toDate_input", END_DATE_STR)
+            time.sleep(2)
+            
+            if from_success and to_success:
+                logger.info("✅ Date range set successfully")
+                return True
+            elif attempt < max_retries - 1:
+                logger.warning(f"⚠️ Date range setting failed, retrying...")
+                time.sleep(3)
+            
+        except Exception as e:
+            logger.error(f"❌ Error setting date range (attempt {attempt + 1}): {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+    
+    logger.warning("⚠️ Date range setting failed after all retries, continuing anyway")
+    return False
+
 def set_datepicker_value(driver, element_id, date_value):
-    """Set value for datepicker widget using JavaScript"""
+    """Set value for datepicker widget using JavaScript with better error handling"""
     try:
         logger.info(f"🗓️ Setting {element_id} to {date_value}")
         
-        # Use JavaScript to set datepicker value
+        # Enhanced JavaScript to handle various datepicker implementations
         script = f"""
         var element = document.getElementById('{element_id}');
         if (element) {{
+            // Clear existing value
+            element.value = '';
+            element.focus();
+            
             // Set the value
             element.value = '{date_value}';
             
-            // Trigger events to notify the datepicker
-            var events = ['input', 'change', 'blur'];
+            // Trigger comprehensive events
+            var events = ['input', 'change', 'blur', 'keyup', 'keydown'];
             events.forEach(function(eventType) {{
-                var event = new Event(eventType, {{ bubbles: true }});
+                var event = new Event(eventType, {{ bubbles: true, cancelable: true }});
                 element.dispatchEvent(event);
             }});
             
+            // Try PrimeFaces specific events
+            if (window.PrimeFaces && PrimeFaces.widget) {{
+                var widgetVar = element.getAttribute('data-widget') || element.id.replace(':', '_');
+                var widget = PF(widgetVar);
+                if (widget && widget.setDate) {{
+                    try {{
+                        widget.setDate(new Date('{date_value}'.split('-').reverse().join('/')));
+                    }} catch(e) {{ console.log('PrimeFaces widget error:', e); }}
+                }}
+            }}
+            
             // Try jQuery events if available
-            if (window.jQuery && jQuery.fn.datepicker) {{
-                jQuery(element).datepicker('setDate', '{date_value}');
-                jQuery(element).trigger('change');
+            if (window.jQuery) {{
+                jQuery(element).trigger('change').trigger('blur');
+                if (jQuery.fn.datepicker) {{
+                    try {{
+                        jQuery(element).datepicker('setDate', '{date_value}');
+                    }} catch(e) {{ console.log('jQuery datepicker error:', e); }}
+                }}
             }}
             
             return element.value;
+        }} else {{
+            return 'ELEMENT_NOT_FOUND';
         }}
-        return null;
         """
         
         result = driver.execute_script(script)
-        logger.info(f"✅ Set {element_id} value: {result}")
         
-        return result == date_value
+        if result == 'ELEMENT_NOT_FOUND':
+            logger.error(f"❌ Element {element_id} not found")
+            return False
+        
+        logger.info(f"✅ Set {element_id} value: {result}")
+        return result == date_value or len(result) > 0
         
     except Exception as e:
         logger.error(f"❌ Error setting {element_id}: {str(e)}")
         return False
 
-def set_date_range(driver):
-    """Set date range on dashboard"""
-    try:
-        logger.info(f"🔹 Setting date range: {START_DATE} to {END_DATE}")
-        
-        # Wait for page to load completely
-        time.sleep(5)
-        
-        # Set start date
-        from_success = set_datepicker_value(driver, "dashboardForm:frmDate_input", START_DATE)
-        time.sleep(1)
-        
-        # Set end date  
-        to_success = set_datepicker_value(driver, "dashboardForm:toDate_input", END_DATE)
-        time.sleep(1)
-        
-        if from_success and to_success:
-            logger.info("✅ Date range set successfully")
-            return True
-        else:
-            logger.warning("⚠️ Date range setting may have failed")
-            return False
-            
-    except Exception as e:
-        logger.error(f"❌ Error setting date range: {str(e)}")
-        return False
-
 def click_generate_button(driver):
-    """Click the GENERATE button"""
+    """Click the GENERATE button with multiple selectors"""
     try:
         logger.info("🔹 Looking for GENERATE button...")
         
         # Wait a bit for any UI updates
-        time.sleep(3)
+        time.sleep(5)
         
-        # Find GENERATE button
-        generate_button = wait_and_find(driver, By.XPATH, "//span[contains(@class, 'ui-button-text') and contains(text(), 'GENERATE')]")
-        if not generate_button:
-            # Try alternative selector
-            generate_button = wait_and_find(driver, By.XPATH, "//button[contains(text(), 'GENERATE')] | //input[@value='GENERATE']")
+        # Multiple selectors for GENERATE button
+        generate_selectors = [
+            (By.XPATH, "//span[contains(@class, 'ui-button-text') and contains(text(), 'GENERATE')]"),
+            (By.XPATH, "//button[contains(text(), 'GENERATE')]"),
+            (By.XPATH, "//input[@value='GENERATE']"),
+            (By.XPATH, "//span[contains(text(), 'GENERATE')]"),
+            (By.XPATH, "//*[contains(text(), 'Generate')]"),
+            (By.XPATH, "//*[contains(text(), 'generate')]"),
+            (By.ID, "generateBtn"),
+            (By.ID, "generate"),
+            (By.CLASS_NAME, "generate-btn"),
+        ]
+        
+        generate_button = wait_and_find_multiple(driver, generate_selectors, timeout=20)
         
         if generate_button:
-            generate_button.click()
+            # Scroll into view
+            driver.execute_script("arguments[0].scrollIntoView();", generate_button)
+            time.sleep(2)
+            
+            # Try clicking
+            try:
+                generate_button.click()
+            except Exception as e:
+                logger.warning(f"Normal click failed: {str(e)}, trying JavaScript click")
+                driver.execute_script("arguments[0].click();", generate_button)
+            
             logger.info("✅ Clicked GENERATE button")
-            time.sleep(8)  # Wait for data to load
+            time.sleep(10)  # Wait longer for data to load
+            
+            take_debug_screenshot(driver, "after_generate")
             return True
         else:
             logger.error("❌ GENERATE button not found")
+            take_debug_screenshot(driver, "generate_not_found")
             return False
             
     except Exception as e:
         logger.error(f"❌ Error clicking GENERATE: {str(e)}")
         return False
 
+def download_report(driver):
+    """Download the report by clicking Excel icon with better error handling"""
+    try:
+        logger.info("🔹 Looking for download icon...")
+        
+        # Clear old files first
+        clear_download_folder()
+        
+        # Wait for data to be generated
+        time.sleep(8)
+        
+        # Multiple selectors for download icon
+        download_selectors = [
+            (By.ID, "xlsIcon"),
+            (By.XPATH, "//img[contains(@src, 'download_Pixel_30.png')]"),
+            (By.XPATH, "//img[contains(@src, 'excel')]"),
+            (By.XPATH, "//img[contains(@id, 'xls')]"),
+            (By.XPATH, "//*[contains(@title, 'Excel')]"),
+            (By.XPATH, "//*[contains(@alt, 'Excel')]"),
+            (By.CLASS_NAME, "excel-icon"),
+            (By.CLASS_NAME, "download-icon"),
+            (By.XPATH, "//a[contains(@href, 'excel') or contains(@href, 'download')]"),
+        ]
+        
+        download_icon = wait_and_find_multiple(driver, download_selectors, timeout=20)
+        
+        if download_icon:
+            # Scroll into view
+            driver.execute_script("arguments[0].scrollIntoView();", download_icon)
+            time.sleep(2)
+            
+            # Try clicking
+            try:
+                download_icon.click()
+            except Exception as e:
+                logger.warning(f"Normal click failed: {str(e)}, trying JavaScript click")
+                driver.execute_script("arguments[0].click();", download_icon)
+            
+            logger.info("✅ Clicked download icon")
+            logger.info("⏳ Waiting for file download (30 seconds expected)...")
+            time.sleep(30)  # Wait longer for download
+            
+            # Check if file was downloaded
+            if check_for_new_download():
+                logger.info("✅ File downloaded successfully")
+                return True
+            else:
+                logger.warning("⚠️ No file downloaded, checking alternative download paths...")
+                return check_alternative_download_paths()
+        else:
+            logger.error("❌ Download icon not found")
+            take_debug_screenshot(driver, "download_not_found")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Error downloading report: {str(e)}")
+        return False
+
 def clear_download_folder():
     """Clear old download files from multiple possible locations"""
     try:
-        # Paths to clear
         clear_paths = [
             DOWNLOAD_FOLDER,
             os.path.expanduser("~/Downloads"),
@@ -268,7 +484,6 @@ def clear_download_folder():
                 try:
                     files_removed = 0
                     for filename in os.listdir(path):
-                        # Remove any Excel/CSV files that look like reports
                         if (filename.endswith(('.xlsx', '.csv', '.xls')) and 
                             not filename.startswith('~')):
                             file_path = os.path.join(path, filename)
@@ -296,7 +511,6 @@ def check_for_new_download():
         
         if files:
             logger.info(f"Found {len(files)} files in download folder")
-            # Check if any file was created recently (last 2 minutes)
             recent_files = []
             current_time = time.time()
             
@@ -304,7 +518,7 @@ def check_for_new_download():
                 file_path = os.path.join(DOWNLOAD_FOLDER, file)
                 file_time = os.path.getctime(file_path)
                 
-                if current_time - file_time < 120:  # 2 minutes = 120 seconds
+                if current_time - file_time < 180:  # 3 minutes = 180 seconds
                     recent_files.append(file)
                     logger.info(f"Recent file found: {file}")
             
@@ -318,13 +532,12 @@ def check_for_new_download():
 def check_alternative_download_paths():
     """Check for downloads in alternative paths"""
     try:
-        # Common download folders to check
         download_paths = [
-            os.path.expanduser("~/Downloads"),  # Linux/Mac default
-            os.path.expanduser("~/Desktop"),    # Sometimes downloads go here
-            os.path.join(os.path.expanduser("~"), "Downloads"),  # Alternative path
-            "/tmp",  # Temporary folder
-            os.getcwd()  # Current working directory
+            os.path.expanduser("~/Downloads"),
+            os.path.expanduser("~/Desktop"),
+            os.path.join(os.path.expanduser("~"), "Downloads"),
+            "/tmp",
+            os.getcwd()
         ]
         
         logger.info("🔍 Checking alternative download paths...")
@@ -336,7 +549,6 @@ def check_alternative_download_paths():
                         if f.endswith(('.xlsx', '.csv', '.xls')) and not f.startswith('~')]
                 
                 if files:
-                    # Look for recently created files (last 5 minutes)
                     recent_files = []
                     current_time = time.time()
                     
@@ -344,13 +556,11 @@ def check_alternative_download_paths():
                         file_path = os.path.join(path, file)
                         file_time = os.path.getctime(file_path)
                         
-                        # File created within last 5 minutes
-                        if current_time - file_time < 300:  # 5 minutes = 300 seconds
+                        if current_time - file_time < 300:  # 5 minutes
                             recent_files.append(file_path)
                             logger.info(f"Found recent file: {file} in {path}")
                     
                     if recent_files:
-                        # Copy the most recent file to our working directory
                         latest_file = max(recent_files, key=os.path.getctime)
                         destination = os.path.join(DOWNLOAD_FOLDER, os.path.basename(latest_file))
                         
@@ -365,46 +575,10 @@ def check_alternative_download_paths():
         logger.error(f"Error checking alternative paths: {str(e)}")
         return False
 
-def download_report(driver):
-    """Download the report by clicking Excel icon"""
-    try:
-        logger.info("🔹 Looking for download icon...")
-        
-        # Clear old files first
-        clear_download_folder()
-        
-        # Find Excel download icon
-        download_icon = wait_and_find(driver, By.ID, "xlsIcon")
-        if not download_icon:
-            # Try alternative selectors
-            download_icon = wait_and_find(driver, By.XPATH, "//img[contains(@src, 'download_Pixel_30.png')] | //img[contains(@src, 'excel')] | //img[contains(@id, 'xls')]")
-        
-        if download_icon:
-            download_icon.click()
-            logger.info("✅ Clicked download icon")
-            logger.info("⏳ Waiting for file download (15-20 seconds expected)...")
-            time.sleep(25)  # Wait longer for download (15-20s + buffer)
-            
-            # Check if file was downloaded in multiple possible locations
-            if check_for_new_download():
-                logger.info("✅ File downloaded successfully")
-                return True
-            else:
-                logger.warning("⚠️ No file downloaded, checking alternative download paths...")
-                return check_alternative_download_paths()
-        else:
-            logger.error("❌ Download icon not found")
-            return False
-            
-    except Exception as e:
-        logger.error(f"❌ Error downloading report: {str(e)}")
-        return False
-
-def get_latest_file(folder_path, max_attempts=5, delay=5):
-    """Get the latest downloaded file"""
+def get_latest_file(folder_path, max_attempts=8, delay=5):
+    """Get the latest downloaded file with more attempts"""
     logger.info(f"🔍 Looking for downloaded files in: {folder_path}")
     
-    # Also check common download folders
     search_paths = [
         folder_path,
         os.path.expanduser("~/Downloads"),
@@ -416,14 +590,12 @@ def get_latest_file(folder_path, max_attempts=5, delay=5):
         try:
             all_files = []
             
-            # Search in all possible paths
             for path in search_paths:
                 if os.path.exists(path):
                     path_files = [
                         os.path.join(path, f) for f in os.listdir(path)
                         if (f.endswith('.xlsx') or f.endswith('.csv') or f.endswith('.xls'))
                         and not f.startswith('~$')
-                        # Look for any Excel/CSV files
                     ]
                     all_files.extend(path_files)
             
@@ -432,14 +604,12 @@ def get_latest_file(folder_path, max_attempts=5, delay=5):
                 time.sleep(delay)
                 continue
             
-            # Get the most recent file
             latest_file = max(all_files, key=os.path.getctime)
             file_size = os.path.getsize(latest_file)
             
             logger.info(f"Found file: {latest_file} (Size: {file_size} bytes)")
             
-            if file_size > 0:
-                # Copy to working directory if it's in a different location
+            if file_size > 1000:  # Minimum 1KB file
                 if os.path.dirname(latest_file) != folder_path:
                     destination = os.path.join(folder_path, os.path.basename(latest_file))
                     shutil.copy2(latest_file, destination)
@@ -459,7 +629,7 @@ def get_latest_file(folder_path, max_attempts=5, delay=5):
     return None
 
 def process_data(file_path):
-    """Process downloaded data"""
+    """Process downloaded data with better filtering"""
     if file_path is None:
         logger.warning("No file to process, creating empty DataFrame")
         return create_empty_data()
@@ -480,7 +650,10 @@ def process_data(file_path):
             logger.info("Sample data:")
             logger.info(df.head(3).to_string())
         
-        # Create processed DataFrame with flexible mapping
+        # Filter out rows with missing critical information
+        logger.info("🔹 Filtering data for completeness...")
+        
+        # Create processed DataFrame
         processed_df = pd.DataFrame()
         
         # Map Order ID from Consignee Name
@@ -525,6 +698,24 @@ def process_data(file_path):
         else:
             processed_df['Status'] = ''
         
+        # Filter out incomplete rows
+        initial_count = len(processed_df)
+        
+        # Keep rows that have at least tracking number and some meaningful data
+        mask = (
+            (processed_df['Tracking Number'].str.len() > 5) &  # Valid tracking number
+            (
+                (processed_df['Order ID'].str.len() > 0) |  # Has order ID OR
+                (processed_df['Status'].str.len() > 0) |    # Has status OR  
+                (~processed_df['Pickup DateTime'].isna())   # Has pickup date
+            )
+        )
+        
+        processed_df = processed_df[mask].copy()
+        
+        filtered_count = len(processed_df)
+        logger.info(f"🔹 Filtered from {initial_count} to {filtered_count} rows ({initial_count - filtered_count} incomplete rows removed)")
+        
         # Sort by Pickup DateTime (newest first)
         if not processed_df['Pickup DateTime'].isna().all():
             processed_df = processed_df.sort_values('Pickup DateTime', ascending=False, na_position='last')
@@ -540,7 +731,15 @@ def process_data(file_path):
         # Clean data
         processed_df = processed_df.replace({np.nan: '', 'NaT': '', None: ''})
         
+        # Reset index
+        processed_df = processed_df.reset_index(drop=True)
+        
         logger.info(f"✅ Processing completed. Final shape: {processed_df.shape}")
+        
+        if len(processed_df) > 0:
+            logger.info("Final sample data:")
+            logger.info(processed_df.head(3).to_string())
+        
         return processed_df
         
     except Exception as e:
@@ -602,39 +801,80 @@ def upload_to_google_sheets(df):
         return False
 
 def main():
-    """Main execution function"""
+    """Main execution function with enhanced error handling"""
     driver = None
     try:
         logger.info("🚀 Starting DHL report automation...")
-        logger.info(f"📅 Date range: {START_DATE} to {END_DATE}")
+        logger.info(f"📅 Date range: {START_DATE_STR} to {END_DATE_STR}")
+        logger.info(f"📁 Download folder: {DOWNLOAD_FOLDER}")
         
         # Setup driver
         driver = setup_chrome_driver()
         
-        # Step 1: Login
-        if not login_to_dhl(driver):
-            logger.error("❌ Login failed")
+        # Step 1: Login with retry
+        login_success = False
+        for attempt in range(3):
+            logger.info(f"🔹 Login attempt {attempt + 1}/3")
+            if login_to_dhl(driver):
+                login_success = True
+                break
+            elif attempt < 2:
+                logger.warning("⚠️ Login failed, retrying...")
+                time.sleep(10)
+        
+        if not login_success:
+            logger.error("❌ Login failed after all attempts")
             upload_to_google_sheets(create_empty_data())
             return
         
-        # Step 2: Navigate to dashboard
-        if not navigate_to_dashboard(driver):
-            logger.error("❌ Dashboard navigation failed")
+        # Step 2: Navigate to dashboard with retry
+        dashboard_success = False
+        for attempt in range(3):
+            logger.info(f"🔹 Dashboard navigation attempt {attempt + 1}/3")
+            if navigate_to_dashboard(driver):
+                dashboard_success = True
+                break
+            elif attempt < 2:
+                logger.warning("⚠️ Dashboard navigation failed, retrying...")
+                time.sleep(10)
+        
+        if not dashboard_success:
+            logger.error("❌ Dashboard navigation failed after all attempts")
             upload_to_google_sheets(create_empty_data())
             return
         
-        # Step 3: Set date range
-        set_date_range(driver)  # Continue even if this fails
+        # Step 3: Set date range (continue even if this fails)
+        set_date_range_with_retry(driver)
         
-        # Step 4: Click generate
-        if not click_generate_button(driver):
-            logger.error("❌ Generate button click failed")
+        # Step 4: Click generate with retry
+        generate_success = False
+        for attempt in range(3):
+            logger.info(f"🔹 Generate button click attempt {attempt + 1}/3")
+            if click_generate_button(driver):
+                generate_success = True
+                break
+            elif attempt < 2:
+                logger.warning("⚠️ Generate button click failed, retrying...")
+                time.sleep(10)
+        
+        if not generate_success:
+            logger.error("❌ Generate button click failed after all attempts")
             upload_to_google_sheets(create_empty_data())
             return
         
-        # Step 5: Download report
-        if not download_report(driver):
-            logger.error("❌ Download failed")
+        # Step 5: Download report with retry
+        download_success = False
+        for attempt in range(2):
+            logger.info(f"🔹 Download attempt {attempt + 1}/2")
+            if download_report(driver):
+                download_success = True
+                break
+            elif attempt < 1:
+                logger.warning("⚠️ Download failed, retrying...")
+                time.sleep(15)
+        
+        if not download_success:
+            logger.error("❌ Download failed after all attempts")
             upload_to_google_sheets(create_empty_data())
             return
         
@@ -654,6 +894,8 @@ def main():
     finally:
         if driver:
             try:
+                # Take final screenshot for debugging
+                take_debug_screenshot(driver, "final_state")
                 driver.quit()
             except:
                 pass
