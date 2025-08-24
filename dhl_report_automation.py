@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 import pandas as pd
 import os
 import shutil
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import numpy as np
 import logging
@@ -30,14 +30,9 @@ DOWNLOAD_FOLDER = os.path.expanduser("~/Downloads")
 if not os.path.exists(DOWNLOAD_FOLDER):
     DOWNLOAD_FOLDER = os.getcwd()
 
-# Date range configuration - Chia nhỏ để tránh quá tải
-# Chỉ lấy 30 ngày gần nhất thay vì từ đầu năm
-END_DATE = datetime.now()
-START_DATE = END_DATE - timedelta(days=30)  # Chỉ lấy 30 ngày gần nhất
-
-# Format for DHL portal
-START_DATE_STR = START_DATE.strftime("%d-%m-%Y")
-END_DATE_STR = END_DATE.strftime("%d-%m-%Y")
+# Date range - DD-MM-YYYY format for DHL portal (giữ nguyên theo yêu cầu)
+START_DATE_STR = "01-01-2025"
+END_DATE_STR = datetime.now().strftime("%d-%m-%Y")
 
 # Credentials
 DHL_USERNAME = os.getenv('DHL_USERNAME', 'truongcongdai4@gmail.com')
@@ -264,10 +259,11 @@ def navigate_to_dashboard(driver):
         return False
 
 def set_date_range_with_retry(driver, max_retries=3):
-    """Set date range with retry logic"""
+    """Set date range with retry logic - giữ nguyên từ 01-01-2025 đến hiện tại"""
     for attempt in range(max_retries):
         try:
             logger.info(f"🔹 Setting date range (attempt {attempt + 1}/{max_retries}): {START_DATE_STR} to {END_DATE_STR}")
+            logger.info("📅 Note: Đang tải toàn bộ data từ đầu năm - có thể mất nhiều thời gian")
             
             # Wait for page to load completely
             time.sleep(5)
@@ -397,7 +393,7 @@ def click_generate_button(driver):
                 driver.execute_script("arguments[0].click();", generate_button)
             
             logger.info("✅ Clicked GENERATE button")
-            time.sleep(10)  # Wait longer for data to load
+            time.sleep(15)  # Wait longer for large dataset (8 months of data)
             
             take_debug_screenshot(driver, "after_generate")
             return True
@@ -449,8 +445,8 @@ def download_report(driver):
                 driver.execute_script("arguments[0].click();", download_icon)
             
             logger.info("✅ Clicked download icon")
-            logger.info("⏳ Waiting for file download (30 seconds expected)...")
-            time.sleep(30)  # Wait longer for download
+            logger.info("⏳ Waiting for file download (45 seconds expected for large dataset)...")
+            time.sleep(45)  # Wait longer for large file download (8 months of data)
             
             # Check if file was downloaded
             if check_for_new_download():
@@ -629,12 +625,13 @@ def get_latest_file(folder_path, max_attempts=8, delay=5):
     return None
 
 def process_data(file_path):
-    """Process downloaded data with better filtering"""
+    """Process downloaded data with better filtering - handles large dataset từ 01-01-2025"""
     if file_path is None:
         logger.warning("No file to process, creating empty DataFrame")
         return create_empty_data()
     
     logger.info(f"🔹 Processing file: {file_path}")
+    logger.info("📊 Processing large dataset từ đầu năm - có thể mất vài phút...")
     
     try:
         # Read file
@@ -698,23 +695,13 @@ def process_data(file_path):
         else:
             processed_df['Status'] = ''
         
-        # Filter out incomplete rows
+        # Filter out only truly invalid rows (more lenient for large dataset)
         initial_count = len(processed_df)
         
-        # Keep rows that have at least tracking number and some meaningful data
+        # Keep rows that have at least a valid tracking number (more lenient filtering)
         mask = (
-            (processed_df['Tracking Number'].str.len() > 5) &  # Valid tracking number
-            (
-                (processed_df['Order ID'].str.len() > 0) |  # Has order ID OR
-                (processed_df['Status'].str.len() > 0) |    # Has status OR  
-                (~processed_df['Pickup DateTime'].isna())   # Has pickup date
-            )
-        )
-        
-        processed_df = processed_df[mask].copy()
-        
-        filtered_count = len(processed_df)
-        logger.info(f"🔹 Filtered from {initial_count} to {filtered_count} rows ({initial_count - filtered_count} incomplete rows removed)")
+            (processed_df['Tracking Number'].str.len() >= 10) &  # Valid tracking number length
+            (~processed_df['Tracking Number'].str.contains(r'^\s*
         
         # Sort by Pickup DateTime (newest first)
         if not processed_df['Pickup DateTime'].isna().all():
@@ -805,7 +792,217 @@ def main():
     driver = None
     try:
         logger.info("🚀 Starting DHL report automation...")
-        logger.info(f"📅 Date range: {START_DATE_STR} to {END_DATE_STR}")
+        logger.info(f"📅 Date range: {START_DATE_STR} to {END_DATE_STR} (giữ nguyên theo yêu cầu)")
+        logger.info(f"📁 Download folder: {DOWNLOAD_FOLDER}")
+        
+        # Setup driver
+        driver = setup_chrome_driver()
+        
+        # Step 1: Login with retry
+        login_success = False
+        for attempt in range(3):
+            logger.info(f"🔹 Login attempt {attempt + 1}/3")
+            if login_to_dhl(driver):
+                login_success = True
+                break
+            elif attempt < 2:
+                logger.warning("⚠️ Login failed, retrying...")
+                time.sleep(10)
+        
+        if not login_success:
+            logger.error("❌ Login failed after all attempts")
+            upload_to_google_sheets(create_empty_data())
+            return
+        
+        # Step 2: Navigate to dashboard with retry
+        dashboard_success = False
+        for attempt in range(3):
+            logger.info(f"🔹 Dashboard navigation attempt {attempt + 1}/3")
+            if navigate_to_dashboard(driver):
+                dashboard_success = True
+                break
+            elif attempt < 2:
+                logger.warning("⚠️ Dashboard navigation failed, retrying...")
+                time.sleep(10)
+        
+        if not dashboard_success:
+            logger.error("❌ Dashboard navigation failed after all attempts")
+            upload_to_google_sheets(create_empty_data())
+            return
+        
+        # Step 3: Set date range (continue even if this fails)
+        # Note: Giữ nguyên date range từ 01-01-2025 theo yêu cầu user
+        set_date_range_with_retry(driver)
+        
+        # Step 4: Click generate with retry
+        generate_success = False
+        for attempt in range(3):
+            logger.info(f"🔹 Generate button click attempt {attempt + 1}/3")
+            if click_generate_button(driver):
+                generate_success = True
+                break
+            elif attempt < 2:
+                logger.warning("⚠️ Generate button click failed, retrying...")
+                time.sleep(10)
+        
+        if not generate_success:
+            logger.error("❌ Generate button click failed after all attempts")
+            upload_to_google_sheets(create_empty_data())
+            return
+        
+        # Step 5: Download report with retry
+        download_success = False
+        for attempt in range(2):
+            logger.info(f"🔹 Download attempt {attempt + 1}/2")
+            if download_report(driver):
+                download_success = True
+                break
+            elif attempt < 1:
+                logger.warning("⚠️ Download failed, retrying...")
+                time.sleep(15)
+        
+        if not download_success:
+            logger.error("❌ Download failed after all attempts")
+            upload_to_google_sheets(create_empty_data())
+            return
+        
+        # Step 6: Process data
+        latest_file = get_latest_file(DOWNLOAD_FOLDER)
+        processed_df = process_data(latest_file)
+        
+        # Step 7: Upload to sheets
+        upload_to_google_sheets(processed_df)
+        
+        logger.info("🎉 Process completed successfully!")
+        
+    except Exception as e:
+        logger.error(f"❌ Main process failed: {str(e)}")
+        upload_to_google_sheets(create_empty_data())
+    
+    finally:
+        if driver:
+            try:
+                # Take final screenshot for debugging
+                take_debug_screenshot(driver, "final_state")
+                driver.quit()
+            except:
+                pass
+
+if __name__ == "__main__":
+    main(), na=True))  # Not empty/whitespace
+        )
+        
+        # Optional: Also keep rows that have meaningful Order ID even with shorter tracking
+        mask_alternative = (
+            (processed_df['Order ID'].str.len() >= 7) &  # Valid order ID
+            (processed_df['Tracking Number'].str.len() >= 5)  # Some tracking info
+        )
+        
+        # Combine conditions - keep if either condition is true
+        final_mask = mask | mask_alternative
+        
+        processed_df = processed_df[final_mask].copy()
+        
+        filtered_count = len(processed_df)
+        logger.info(f"🔹 Filtered from {initial_count} to {filtered_count} rows")
+        logger.info(f"📊 Removed {initial_count - filtered_count} rows with invalid/missing tracking info")
+        
+        # Log some statistics about the data
+        if len(processed_df) > 0:
+            complete_orders = processed_df[processed_df['Order ID'].str.len() > 0].shape[0] 
+            delivered_orders = processed_df[processed_df['Status'].str.contains('DELIVERED', na=False)].shape[0]
+            logger.info(f"📈 Data stats: {complete_orders} có Order ID, {delivered_orders} đã delivered")
+        
+        # Sort by Pickup DateTime (newest first)
+        if not processed_df['Pickup DateTime'].isna().all():
+            processed_df = processed_df.sort_values('Pickup DateTime', ascending=False, na_position='last')
+        
+        # Convert datetime to string
+        processed_df['Pickup DateTime'] = processed_df['Pickup DateTime'].apply(
+            lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(x) else ''
+        )
+        processed_df['Delivery Date'] = processed_df['Delivery Date'].apply(
+            lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(x) else ''
+        )
+        
+        # Clean data
+        processed_df = processed_df.replace({np.nan: '', 'NaT': '', None: ''})
+        
+        # Reset index
+        processed_df = processed_df.reset_index(drop=True)
+        
+        logger.info(f"✅ Processing completed. Final shape: {processed_df.shape}")
+        
+        if len(processed_df) > 0:
+            logger.info("Final sample data:")
+            logger.info(processed_df.head(3).to_string())
+        
+        return processed_df
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing data: {str(e)}")
+        return create_empty_data()
+
+def create_empty_data():
+    """Create empty DataFrame structure"""
+    return pd.DataFrame({
+        'Order ID': [],
+        'Tracking Number': [],
+        'Pickup DateTime': [],
+        'Delivery Date': [],
+        'Status': []
+    })
+
+def upload_to_google_sheets(df):
+    """Upload data to Google Sheets"""
+    logger.info("🔹 Uploading to Google Sheets...")
+    
+    try:
+        if not os.path.exists(SERVICE_ACCOUNT_FILE):
+            logger.error(f"❌ Service account file not found: {SERVICE_ACCOUNT_FILE}")
+            return False
+        
+        creds = Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        service = build("sheets", "v4", credentials=creds)
+        
+        # Prepare data
+        headers = df.columns.tolist()
+        data = df.astype(str).values.tolist()
+        values = [headers] + data
+        
+        logger.info(f"Uploading {len(data)} rows")
+        
+        # Clear existing content
+        service.spreadsheets().values().clear(
+            spreadsheetId=GOOGLE_SHEET_ID,
+            range=f"{SHEET_NAME}!A1:Z1000"
+        ).execute()
+        logger.info("✅ Cleared existing content")
+        
+        # Upload new data
+        service.spreadsheets().values().update(
+            spreadsheetId=GOOGLE_SHEET_ID,
+            range=f"{SHEET_NAME}!A1",
+            valueInputOption="USER_ENTERED",
+            body={'values': values}
+        ).execute()
+        
+        logger.info("✅ Data uploaded successfully to Google Sheets")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Upload failed: {str(e)}")
+        return False
+
+def main():
+    """Main execution function with enhanced error handling"""
+    driver = None
+    try:
+        logger.info("🚀 Starting DHL report automation...")
+        logger.info(f"📅 Date range: {START_DATE_STR} to {END_DATE_STR} (giữ nguyên theo yêu cầu)")
         logger.info(f"📁 Download folder: {DOWNLOAD_FOLDER}")
         
         # Setup driver
