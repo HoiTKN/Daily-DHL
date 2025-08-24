@@ -31,7 +31,7 @@ if not os.path.exists(DOWNLOAD_FOLDER):
     DOWNLOAD_FOLDER = os.getcwd()  # Fallback to current directory
 
 # Date range - DD-MM-YYYY format for DHL portal
-START_DATE = "01-01-2025"
+START_DATE = "20-01-2025"
 END_DATE = datetime.now().strftime("%d-%m-%Y")
 
 # Credentials
