@@ -505,9 +505,9 @@ def process_data(file_path):
         # Create processed DataFrame with flexible mapping
         processed_df = pd.DataFrame()
         
-        # Map Order ID from Consignee Name
+        # Map Order ID from Consignee Name (first 7 characters)
         if 'Consignee Name' in df.columns:
-            processed_df['Order ID'] = df['Consignee Name'].fillna('').astype(str).str.extract(r'(\d{7})')[0].fillna('')
+            processed_df['Order ID'] = df['Consignee Name'].fillna('').astype(str).str[:7]
         else:
             processed_df['Order ID'] = ''
         
@@ -546,12 +546,22 @@ def process_data(file_path):
                 break
         else:
             processed_df['Status'] = ''
+
+        # Map Last Failure Reason
+        failure_cols = ['Last Failure Reason', 'Failure Reason', 'Reason']
+        for col in failure_cols:
+            if col in df.columns:
+                processed_df['Last Failure Reason'] = df[col].fillna('').astype(str)
+                break
+        else:
+            processed_df['Last Failure Reason'] = ''
         
         # FIX 2: Chỉ giữ tracking numbers hợp lệ (>= 13 digits)
         # Ensure all string columns are properly converted
         processed_df['Order ID'] = processed_df['Order ID'].astype(str)
         processed_df['Tracking Number'] = processed_df['Tracking Number'].astype(str)
         processed_df['Status'] = processed_df['Status'].astype(str)
+        processed_df['Last Failure Reason'] = processed_df['Last Failure Reason'].astype(str)
         
         initial_count = len(processed_df)
         processed_df = processed_df[processed_df['Tracking Number'].str.len() >= 13].copy()
@@ -589,7 +599,8 @@ def create_empty_data():
         'Tracking Number': [],
         'Pickup DateTime': [],
         'Delivery Date': [],
-        'Status': []
+        'Status': [],
+        'Last Failure Reason': []
     })
 
 def upload_to_google_sheets(df):
