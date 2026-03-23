@@ -95,160 +95,106 @@ def wait_and_find(driver, by, value, timeout=15):
         return None
 
 def login_to_dhl(driver):
-    """Login to DHL portal"""
+    """Login to DHL portal.
+
+    DHL login form uses dummy/real field pairs:
+      - email1_dummy (j_username_dummy) = visible field user types into
+      - email1 (j_username) = hidden real field
+      - j_password_dummy = visible password field
+      - j_password = hidden real password field
+    Page JS copies dummy -> real on submit. We must fill the DUMMY fields
+    so the copy logic works, and also set real fields via JS as backup.
+    """
     try:
         logger.info("🔹 Logging into DHL portal...")
 
-        # Go to login page
         driver.get("https://ecommerceportal.dhl.com/Portal/pages/login/userlogin.xhtml")
         time.sleep(8)
 
         logger.info(f"📄 Current URL: {driver.current_url}")
         logger.info(f"📄 Page title: {driver.title}")
 
-        # Debug: log the login form HTML structure
-        try:
-            form_html = driver.execute_script("""
-                var forms = document.querySelectorAll('form');
-                var result = [];
-                forms.forEach(function(f) {
-                    result.push('FORM id=' + f.id + ' action=' + f.action + ' method=' + f.method);
-                    var inputs = f.querySelectorAll('input, button, a.btn-login, span.btn-login');
-                    inputs.forEach(function(i) {
-                        result.push('  ' + i.tagName + ' id=' + i.id + ' name=' + i.name + ' type=' + i.type + ' class=' + i.className + ' onclick=' + i.getAttribute('onclick'));
-                    });
-                });
-                return result.join('\\n');
+        # Fill DUMMY username field (the visible one users interact with)
+        dummy_user = wait_and_find(driver, By.ID, "email1_dummy", timeout=10)
+        if not dummy_user:
+            dummy_user = wait_and_find(driver, By.NAME, "j_username_dummy", timeout=5)
+        if dummy_user:
+            dummy_user.clear()
+            dummy_user.send_keys(DHL_USERNAME)
+            logger.info("✅ Dummy username field filled")
+        else:
+            logger.warning("⚠️ Dummy username field not found")
+
+        # Also set REAL username field via JS (backup)
+        driver.execute_script(
+            "var el = document.querySelector('input[name=\"j_username\"]');"
+            "if(el) { el.value = arguments[0]; }",
+            DHL_USERNAME
+        )
+        logger.info("✅ Real username field set via JS")
+
+        # Fill DUMMY password field (the visible one)
+        dummy_pass = wait_and_find(driver, By.NAME, "j_password_dummy", timeout=5)
+        if dummy_pass:
+            dummy_pass.clear()
+            dummy_pass.send_keys(DHL_PASSWORD)
+            logger.info("✅ Dummy password field filled")
+        else:
+            logger.warning("⚠️ Dummy password field not found")
+
+        # Also set REAL password field via JS (backup)
+        driver.execute_script(
+            "var el = document.querySelector('input[name=\"j_password\"]');"
+            "if(el) { el.value = arguments[0]; }",
+            DHL_PASSWORD
+        )
+        logger.info("✅ Real password field set via JS")
+
+        time.sleep(1)
+
+        # Click the submit button
+        submit_btn = wait_and_find(driver, By.CSS_SELECTOR, "input[type='submit'].btn-login", timeout=5)
+        if not submit_btn:
+            submit_btn = wait_and_find(driver, By.CLASS_NAME, "btn-login", timeout=5)
+
+        if submit_btn:
+            # Ensure real fields have values right before clicking
+            driver.execute_script("""
+                var u = document.querySelector('input[name="j_username"]');
+                var p = document.querySelector('input[name="j_password"]');
+                var ud = document.querySelector('input[name="j_username_dummy"]');
+                var pd = document.querySelector('input[name="j_password_dummy"]');
+                if(u && ud) u.value = ud.value;
+                if(p && pd) p.value = pd.value;
             """)
-            logger.info(f"📄 Form structure:\\n{form_html}")
-        except Exception as e:
-            logger.warning(f"Could not get form structure: {e}")
+            submit_btn.click()
+            logger.info("✅ Submit button clicked")
+        else:
+            logger.warning("⚠️ Submit button not found, trying form submit via JS")
+            driver.execute_script("""
+                var form = document.getElementById('loginForm');
+                if(form) form.submit();
+            """)
+            logger.info("✅ Form submitted via JS")
 
-        # Find and fill username - try multiple selectors
-        username_field = None
-        username_selectors = [
-            (By.ID, "email1"),
-            (By.NAME, "j_username"),
-            (By.XPATH, "//input[@type='email']"),
-            (By.XPATH, "//input[@type='text' and contains(@id, 'email')]"),
-            (By.CSS_SELECTOR, "input[id*='email']"),
-            (By.CSS_SELECTOR, "input[name*='username']"),
-        ]
-        for by, value in username_selectors:
-            username_field = wait_and_find(driver, by, value, timeout=5)
-            if username_field:
-                logger.info(f"✅ Found username field with: {by}={value}")
-                break
-
-        if not username_field:
-            logger.error("❌ Username field not found")
-            logger.info(f"📄 Page source (first 3000 chars): {driver.page_source[:3000]}")
-            return False
-
-        username_field.clear()
-        username_field.send_keys(DHL_USERNAME)
-        logger.info("✅ Username entered")
-
-        # Find and fill password - try multiple selectors
-        password_field = None
-        password_selectors = [
-            (By.NAME, "j_password"),
-            (By.ID, "password1"),
-            (By.XPATH, "//input[@type='password']"),
-            (By.CSS_SELECTOR, "input[type='password']"),
-        ]
-        for by, value in password_selectors:
-            password_field = wait_and_find(driver, by, value, timeout=5)
-            if password_field:
-                logger.info(f"✅ Found password field with: {by}={value}")
-                break
-
-        if not password_field:
-            logger.error("❌ Password field not found")
-            return False
-
-        password_field.clear()
-        password_field.send_keys(DHL_PASSWORD)
-        logger.info("✅ Password entered")
-
-        # Strategy 1: Press Enter on password field (most reliable for JSF forms)
-        logger.info("🔄 Trying login via Enter key on password field...")
-        password_field.send_keys(Keys.RETURN)
         time.sleep(15)
 
         current_url = driver.current_url.lower()
-        logger.info(f"📄 URL after Enter key: {driver.current_url}")
+        logger.info(f"📄 URL after login attempt: {driver.current_url}")
+        logger.info(f"📄 Title after login: {driver.title}")
 
         if "userlogin" not in current_url and "login.xhtml" not in current_url:
-            logger.info("✅ Login successful (Enter key)")
+            logger.info("✅ Login successful!")
             return True
 
-        # Strategy 2: Find and click the actual submit button/link
-        logger.info("🔄 Enter key didn't work, trying button click...")
-        login_button = None
-        login_selectors = [
-            (By.CSS_SELECTOR, "a.btn-login"),
-            (By.CSS_SELECTOR, "button.btn-login"),
-            (By.CLASS_NAME, "btn-login"),
-            (By.XPATH, "//a[contains(@class, 'btn-login')]"),
-            (By.XPATH, "//input[@type='submit']"),
-            (By.XPATH, "//button[@type='submit']"),
-        ]
-        for by, value in login_selectors:
-            login_button = wait_and_find(driver, by, value, timeout=3)
-            if login_button:
-                tag = login_button.tag_name
-                onclick = login_button.get_attribute('onclick') or ''
-                href = login_button.get_attribute('href') or ''
-                logger.info(f"✅ Found login button: tag={tag}, {by}={value}, onclick={onclick[:100]}, href={href[:100]}")
-                break
-
-        if login_button:
-            # Try JS click (more reliable for overlays)
-            driver.execute_script("arguments[0].click();", login_button)
-            logger.info("✅ Login button JS-clicked")
-            time.sleep(15)
-
-            current_url = driver.current_url.lower()
-            logger.info(f"📄 URL after button click: {driver.current_url}")
-
-            if "userlogin" not in current_url and "login.xhtml" not in current_url:
-                logger.info("✅ Login successful (button click)")
-                return True
-
-        # Strategy 3: Submit the form directly via JavaScript
-        logger.info("🔄 Button click didn't work, trying JS form submit...")
-        try:
-            driver.execute_script("""
-                var form = document.querySelector('form');
-                if (form) {
-                    // Try clicking any element with btn-login class
-                    var btn = document.querySelector('.btn-login');
-                    if (btn && btn.onclick) {
-                        btn.onclick();
-                    } else if (btn) {
-                        btn.click();
-                    } else {
-                        form.submit();
-                    }
-                }
-            """)
-            time.sleep(15)
-
-            current_url = driver.current_url.lower()
-            logger.info(f"📄 URL after JS submit: {driver.current_url}")
-
-            if "userlogin" not in current_url and "login.xhtml" not in current_url:
-                logger.info("✅ Login successful (JS submit)")
-                return True
-        except Exception as e:
-            logger.warning(f"JS submit failed: {e}")
-
-        # Check for error messages on the page
+        # Check for error messages
         try:
             error_msgs = driver.execute_script("""
                 var msgs = [];
-                var elements = document.querySelectorAll('.ui-messages-error, .ui-message-error, .error, .alert-danger, .login-error, [class*=error], [class*=Error]');
+                var elements = document.querySelectorAll(
+                    '.ui-messages-error, .ui-message-error, .error, '
+                    + '.alert-danger, .login-error, [class*=error], [class*=Error]'
+                );
                 elements.forEach(function(el) {
                     if (el.textContent.trim()) msgs.push(el.textContent.trim());
                 });
@@ -256,11 +202,31 @@ def login_to_dhl(driver):
             """)
             if error_msgs:
                 logger.error(f"❌ Error messages on page: {error_msgs}")
+            else:
+                logger.info("No error messages found on page")
         except Exception:
             pass
 
-        logger.error("❌ Login failed - all strategies exhausted")
-        logger.info(f"📄 Page source (first 3000 chars): {driver.page_source[:3000]}")
+        # Log field values to verify they were set correctly
+        try:
+            field_values = driver.execute_script("""
+                var result = {};
+                var fields = ['j_username', 'j_username_dummy', 'j_password', 'j_password_dummy'];
+                fields.forEach(function(name) {
+                    var el = document.querySelector('input[name="' + name + '"]');
+                    if (el) {
+                        result[name] = el.value ? '(has value, length=' + el.value.length + ')' : '(EMPTY)';
+                    } else {
+                        result[name] = '(not found)';
+                    }
+                });
+                return JSON.stringify(result);
+            """)
+            logger.info(f"📄 Field values after failed login: {field_values}")
+        except Exception:
+            pass
+
+        logger.error("❌ Login failed")
         return False
 
     except Exception as e:
