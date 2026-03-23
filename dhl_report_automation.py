@@ -31,7 +31,7 @@ if not os.path.exists(DOWNLOAD_FOLDER):
     DOWNLOAD_FOLDER = os.getcwd()  # Fallback to current directory
 
 # Date range - DD-MM-YYYY format for DHL portal
-START_DATE = "20-01-2025"
+START_DATE = "01-02-2026"
 END_DATE = datetime.now().strftime("%d-%m-%Y")
 
 # Credentials
@@ -39,15 +39,19 @@ DHL_USERNAME = os.getenv('DHL_USERNAME', 'truongcongdai4@gmail.com')
 DHL_PASSWORD = os.getenv('DHL_PASSWORD', '@Love123123')
 
 def setup_chrome_driver():
-    """Setup Chrome driver"""
+    """Setup Chrome driver with anti-detection"""
     try:
         chrome_options = Options()
-        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--window-size=1920,1080')
-        
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+
         prefs = {
             "download.default_directory": DOWNLOAD_FOLDER,
             "download.prompt_for_download": False,
@@ -55,23 +59,27 @@ def setup_chrome_driver():
             "safebrowsing.enabled": True
         }
         chrome_options.add_experimental_option("prefs", prefs)
-        
+
         # Try to find ChromeDriver
         chromedriver_paths = ['/usr/bin/chromedriver', '/usr/local/bin/chromedriver', 'chromedriver']
-        
+
         for driver_path in chromedriver_paths:
             try:
                 if os.path.exists(driver_path) or driver_path == 'chromedriver':
                     service = Service(executable_path=driver_path)
                     driver = webdriver.Chrome(service=service, options=chrome_options)
+                    # Remove webdriver flag to avoid detection
+                    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                        'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
+                    })
                     logger.info(f"✅ ChromeDriver initialized from: {driver_path}")
                     return driver
             except Exception as e:
                 logger.warning(f"Failed to use {driver_path}: {str(e)}")
                 continue
-        
+
         raise Exception("Could not initialize ChromeDriver")
-        
+
     except Exception as e:
         logger.error(f"❌ Chrome driver setup failed: {str(e)}")
         raise
@@ -90,48 +98,113 @@ def login_to_dhl(driver):
     """Login to DHL portal"""
     try:
         logger.info("🔹 Logging into DHL portal...")
-        
+
         # Go to login page
         driver.get("https://ecommerceportal.dhl.com/Portal/pages/login/userlogin.xhtml")
-        time.sleep(5)
-        
-        # Find and fill username
-        username_field = wait_and_find(driver, By.ID, "email1")
+        time.sleep(8)
+
+        logger.info(f"📄 Current URL: {driver.current_url}")
+        logger.info(f"📄 Page title: {driver.title}")
+
+        # Find and fill username - try multiple selectors
+        username_field = None
+        username_selectors = [
+            (By.ID, "email1"),
+            (By.NAME, "j_username"),
+            (By.XPATH, "//input[@type='email']"),
+            (By.XPATH, "//input[@type='text' and contains(@id, 'email')]"),
+            (By.CSS_SELECTOR, "input[id*='email']"),
+            (By.CSS_SELECTOR, "input[name*='username']"),
+        ]
+        for by, value in username_selectors:
+            username_field = wait_and_find(driver, by, value, timeout=5)
+            if username_field:
+                logger.info(f"✅ Found username field with: {by}={value}")
+                break
+
         if not username_field:
+            logger.error("❌ Username field not found")
+            logger.info(f"📄 Page source (first 2000 chars): {driver.page_source[:2000]}")
             return False
-        
+
         username_field.clear()
         username_field.send_keys(DHL_USERNAME)
         logger.info("✅ Username entered")
-        
-        # Find and fill password
-        password_field = wait_and_find(driver, By.NAME, "j_password")
+
+        # Find and fill password - try multiple selectors
+        password_field = None
+        password_selectors = [
+            (By.NAME, "j_password"),
+            (By.ID, "password1"),
+            (By.XPATH, "//input[@type='password']"),
+            (By.CSS_SELECTOR, "input[type='password']"),
+        ]
+        for by, value in password_selectors:
+            password_field = wait_and_find(driver, by, value, timeout=5)
+            if password_field:
+                logger.info(f"✅ Found password field with: {by}={value}")
+                break
+
         if not password_field:
+            logger.error("❌ Password field not found")
             return False
-        
+
         password_field.clear()
         password_field.send_keys(DHL_PASSWORD)
         logger.info("✅ Password entered")
-        
-        # Click login button
-        login_button = wait_and_find(driver, By.CLASS_NAME, "btn-login")
+
+        # Click login button - try multiple selectors
+        login_button = None
+        login_selectors = [
+            (By.CLASS_NAME, "btn-login"),
+            (By.XPATH, "//button[contains(@class, 'btn-login')]"),
+            (By.XPATH, "//input[@type='submit']"),
+            (By.XPATH, "//button[@type='submit']"),
+            (By.XPATH, "//button[contains(text(), 'Login')]"),
+            (By.XPATH, "//button[contains(text(), 'Sign')]"),
+        ]
+        for by, value in login_selectors:
+            login_button = wait_and_find(driver, by, value, timeout=5)
+            if login_button:
+                logger.info(f"✅ Found login button with: {by}={value}")
+                break
+
         if not login_button:
+            logger.error("❌ Login button not found")
             return False
-        
-        login_button.click()
+
+        # Try clicking, fallback to JS click
+        try:
+            login_button.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", login_button)
         logger.info("✅ Login button clicked")
-        
+
         # Wait for redirect
-        time.sleep(10)
-        
-        # Check if login successful
-        if "login" not in driver.current_url.lower():
+        time.sleep(15)
+
+        current_url = driver.current_url.lower()
+        logger.info(f"📄 URL after login: {driver.current_url}")
+        logger.info(f"📄 Title after login: {driver.title}")
+
+        # Check if login successful - more robust check
+        if "userlogin" not in current_url and "login.xhtml" not in current_url:
             logger.info("✅ Login successful")
             return True
-        else:
-            logger.error("❌ Login failed")
+
+        # Sometimes page redirects but URL still shows login briefly
+        # Check for elements that only appear after login
+        try:
+            WebDriverWait(driver, 10).until(
+                lambda d: "userlogin" not in d.current_url.lower()
+            )
+            logger.info(f"✅ Login successful (after wait). URL: {driver.current_url}")
+            return True
+        except TimeoutException:
+            logger.error("❌ Login failed - still on login page")
+            logger.info(f"📄 Page source (first 2000 chars): {driver.page_source[:2000]}")
             return False
-            
+
     except Exception as e:
         logger.error(f"❌ Login error: {str(e)}")
         return False
@@ -505,9 +578,9 @@ def process_data(file_path):
         # Create processed DataFrame with flexible mapping
         processed_df = pd.DataFrame()
         
-        # Map Order ID from Consignee Name
+        # Map Order ID from Consignee Name (first 7 characters)
         if 'Consignee Name' in df.columns:
-            processed_df['Order ID'] = df['Consignee Name'].fillna('').astype(str).str.extract(r'(\d{7})')[0].fillna('')
+            processed_df['Order ID'] = df['Consignee Name'].fillna('').astype(str).str[:7]
         else:
             processed_df['Order ID'] = ''
         
@@ -546,12 +619,22 @@ def process_data(file_path):
                 break
         else:
             processed_df['Status'] = ''
+
+        # Map Last Failure Reason
+        failure_cols = ['Last Failure Reason', 'Failure Reason', 'Reason']
+        for col in failure_cols:
+            if col in df.columns:
+                processed_df['Last Failure Reason'] = df[col].fillna('').astype(str)
+                break
+        else:
+            processed_df['Last Failure Reason'] = ''
         
         # FIX 2: Chỉ giữ tracking numbers hợp lệ (>= 13 digits)
         # Ensure all string columns are properly converted
         processed_df['Order ID'] = processed_df['Order ID'].astype(str)
         processed_df['Tracking Number'] = processed_df['Tracking Number'].astype(str)
         processed_df['Status'] = processed_df['Status'].astype(str)
+        processed_df['Last Failure Reason'] = processed_df['Last Failure Reason'].astype(str)
         
         initial_count = len(processed_df)
         processed_df = processed_df[processed_df['Tracking Number'].str.len() >= 13].copy()
@@ -589,7 +672,8 @@ def create_empty_data():
         'Tracking Number': [],
         'Pickup DateTime': [],
         'Delivery Date': [],
-        'Status': []
+        'Status': [],
+        'Last Failure Reason': []
     })
 
 def upload_to_google_sheets(df):
