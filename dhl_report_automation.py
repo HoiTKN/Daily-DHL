@@ -97,13 +97,9 @@ def wait_and_find(driver, by, value, timeout=15):
 def login_to_dhl(driver):
     """Login to DHL portal.
 
-    DHL login form uses dummy/real field pairs:
-      - email1_dummy (j_username_dummy) = visible field user types into
-      - email1 (j_username) = hidden real field
-      - j_password_dummy = visible password field
-      - j_password = hidden real password field
-    Page JS copies dummy -> real on submit. We must fill the DUMMY fields
-    so the copy logic works, and also set real fields via JS as backup.
+    DHL form has 4 fields: email1/j_username (visible), email1_dummy/j_username_dummy (hidden),
+    j_password (visible), j_password_dummy (hidden).
+    We send_keys to visible fields, then use JS to set ALL fields before submit.
     """
     try:
         logger.info("🔹 Logging into DHL portal...")
@@ -114,115 +110,77 @@ def login_to_dhl(driver):
         logger.info(f"📄 Current URL: {driver.current_url}")
         logger.info(f"📄 Page title: {driver.title}")
 
-        # Fill DUMMY username field (the visible one users interact with)
-        dummy_user = wait_and_find(driver, By.ID, "email1_dummy", timeout=10)
-        if not dummy_user:
-            dummy_user = wait_and_find(driver, By.NAME, "j_username_dummy", timeout=5)
-        if dummy_user:
-            dummy_user.clear()
-            dummy_user.send_keys(DHL_USERNAME)
-            logger.info("✅ Dummy username field filled")
+        # Fill VISIBLE username field (email1 / j_username) via send_keys
+        username_field = wait_and_find(driver, By.ID, "email1", timeout=10)
+        if username_field:
+            username_field.clear()
+            username_field.send_keys(DHL_USERNAME)
+            logger.info("✅ Username entered (email1)")
         else:
-            logger.warning("⚠️ Dummy username field not found")
+            logger.error("❌ Username field not found")
+            return False
 
-        # Also set REAL username field via JS (backup)
-        driver.execute_script(
-            "var el = document.querySelector('input[name=\"j_username\"]');"
-            "if(el) { el.value = arguments[0]; }",
-            DHL_USERNAME
-        )
-        logger.info("✅ Real username field set via JS")
-
-        # Fill DUMMY password field (the visible one)
-        dummy_pass = wait_and_find(driver, By.NAME, "j_password_dummy", timeout=5)
-        if dummy_pass:
-            dummy_pass.clear()
-            dummy_pass.send_keys(DHL_PASSWORD)
-            logger.info("✅ Dummy password field filled")
+        # Fill VISIBLE password field (j_password) via send_keys
+        password_field = wait_and_find(driver, By.NAME, "j_password", timeout=5)
+        if password_field:
+            password_field.clear()
+            password_field.send_keys(DHL_PASSWORD)
+            logger.info("✅ Password entered (j_password)")
         else:
-            logger.warning("⚠️ Dummy password field not found")
-
-        # Also set REAL password field via JS (backup)
-        driver.execute_script(
-            "var el = document.querySelector('input[name=\"j_password\"]');"
-            "if(el) { el.value = arguments[0]; }",
-            DHL_PASSWORD
-        )
-        logger.info("✅ Real password field set via JS")
+            logger.error("❌ Password field not found")
+            return False
 
         time.sleep(1)
 
-        # Click the submit button
-        submit_btn = wait_and_find(driver, By.CSS_SELECTOR, "input[type='submit'].btn-login", timeout=5)
-        if not submit_btn:
-            submit_btn = wait_and_find(driver, By.CLASS_NAME, "btn-login", timeout=5)
+        # Use JS to set ALL 4 fields (visible + hidden) to ensure form submits correctly
+        driver.execute_script("""
+            var username = arguments[0];
+            var password = arguments[1];
+            var fields = {
+                'j_username': username,
+                'j_username_dummy': username,
+                'j_password': password,
+                'j_password_dummy': password
+            };
+            for (var name in fields) {
+                var el = document.querySelector('input[name="' + name + '"]');
+                if (el) el.value = fields[name];
+            }
+        """, DHL_USERNAME, DHL_PASSWORD)
+        logger.info("✅ All 4 fields set via JS")
 
-        if submit_btn:
-            # Ensure real fields have values right before clicking
-            driver.execute_script("""
-                var u = document.querySelector('input[name="j_username"]');
-                var p = document.querySelector('input[name="j_password"]');
-                var ud = document.querySelector('input[name="j_username_dummy"]');
-                var pd = document.querySelector('input[name="j_password_dummy"]');
-                if(u && ud) u.value = ud.value;
-                if(p && pd) p.value = pd.value;
-            """)
-            submit_btn.click()
-            logger.info("✅ Submit button clicked")
-        else:
-            logger.warning("⚠️ Submit button not found, trying form submit via JS")
-            driver.execute_script("""
-                var form = document.getElementById('loginForm');
-                if(form) form.submit();
-            """)
-            logger.info("✅ Form submitted via JS")
+        # Submit the loginForm directly via JS (most reliable for Spring Security)
+        driver.execute_script("""
+            var form = document.getElementById('loginForm');
+            if (form) form.submit();
+        """)
+        logger.info("✅ loginForm submitted via JS")
 
         time.sleep(15)
 
         current_url = driver.current_url.lower()
-        logger.info(f"📄 URL after login attempt: {driver.current_url}")
+        logger.info(f"📄 URL after login: {driver.current_url}")
         logger.info(f"📄 Title after login: {driver.title}")
 
         if "userlogin" not in current_url and "login.xhtml" not in current_url:
             logger.info("✅ Login successful!")
             return True
 
-        # Check for error messages
+        # Check for error messages on page
         try:
             error_msgs = driver.execute_script("""
                 var msgs = [];
-                var elements = document.querySelectorAll(
+                document.querySelectorAll(
                     '.ui-messages-error, .ui-message-error, .error, '
                     + '.alert-danger, .login-error, [class*=error], [class*=Error]'
-                );
-                elements.forEach(function(el) {
-                    if (el.textContent.trim()) msgs.push(el.textContent.trim());
+                ).forEach(function(el) {
+                    var t = el.textContent.trim();
+                    if (t) msgs.push(t);
                 });
                 return msgs.join(' | ');
             """)
             if error_msgs:
                 logger.error(f"❌ Error messages on page: {error_msgs}")
-            else:
-                logger.info("No error messages found on page")
-        except Exception:
-            pass
-
-        # Log field values to verify they were set correctly
-        try:
-            field_values = driver.execute_script("""
-                var result = {};
-                var fields = ['j_username', 'j_username_dummy', 'j_password', 'j_password_dummy'];
-                fields.forEach(function(name) {
-                    var el = document.querySelector('input[name="' + name + '"]');
-                    if (el) {
-                        result[name] = el.value ? '(has value, length=' + el.value.length + ')' : '(EMPTY)';
-                    } else {
-                        result[name] = '(not found)';
-                    }
-                });
-                return JSON.stringify(result);
-            """)
-            logger.info(f"📄 Field values after failed login: {field_values}")
         except Exception:
             pass
 
