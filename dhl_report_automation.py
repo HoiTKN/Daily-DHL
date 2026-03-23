@@ -106,6 +106,24 @@ def login_to_dhl(driver):
         logger.info(f"📄 Current URL: {driver.current_url}")
         logger.info(f"📄 Page title: {driver.title}")
 
+        # Debug: log the login form HTML structure
+        try:
+            form_html = driver.execute_script("""
+                var forms = document.querySelectorAll('form');
+                var result = [];
+                forms.forEach(function(f) {
+                    result.push('FORM id=' + f.id + ' action=' + f.action + ' method=' + f.method);
+                    var inputs = f.querySelectorAll('input, button, a.btn-login, span.btn-login');
+                    inputs.forEach(function(i) {
+                        result.push('  ' + i.tagName + ' id=' + i.id + ' name=' + i.name + ' type=' + i.type + ' class=' + i.className + ' onclick=' + i.getAttribute('onclick'));
+                    });
+                });
+                return result.join('\\n');
+            """)
+            logger.info(f"📄 Form structure:\\n{form_html}")
+        except Exception as e:
+            logger.warning(f"Could not get form structure: {e}")
+
         # Find and fill username - try multiple selectors
         username_field = None
         username_selectors = [
@@ -124,7 +142,7 @@ def login_to_dhl(driver):
 
         if not username_field:
             logger.error("❌ Username field not found")
-            logger.info(f"📄 Page source (first 2000 chars): {driver.page_source[:2000]}")
+            logger.info(f"📄 Page source (first 3000 chars): {driver.page_source[:3000]}")
             return False
 
         username_field.clear()
@@ -153,57 +171,97 @@ def login_to_dhl(driver):
         password_field.send_keys(DHL_PASSWORD)
         logger.info("✅ Password entered")
 
-        # Click login button - try multiple selectors
-        login_button = None
-        login_selectors = [
-            (By.CLASS_NAME, "btn-login"),
-            (By.XPATH, "//button[contains(@class, 'btn-login')]"),
-            (By.XPATH, "//input[@type='submit']"),
-            (By.XPATH, "//button[@type='submit']"),
-            (By.XPATH, "//button[contains(text(), 'Login')]"),
-            (By.XPATH, "//button[contains(text(), 'Sign')]"),
-        ]
-        for by, value in login_selectors:
-            login_button = wait_and_find(driver, by, value, timeout=5)
-            if login_button:
-                logger.info(f"✅ Found login button with: {by}={value}")
-                break
-
-        if not login_button:
-            logger.error("❌ Login button not found")
-            return False
-
-        # Try clicking, fallback to JS click
-        try:
-            login_button.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", login_button)
-        logger.info("✅ Login button clicked")
-
-        # Wait for redirect
+        # Strategy 1: Press Enter on password field (most reliable for JSF forms)
+        logger.info("🔄 Trying login via Enter key on password field...")
+        password_field.send_keys(Keys.RETURN)
         time.sleep(15)
 
         current_url = driver.current_url.lower()
-        logger.info(f"📄 URL after login: {driver.current_url}")
-        logger.info(f"📄 Title after login: {driver.title}")
+        logger.info(f"📄 URL after Enter key: {driver.current_url}")
 
-        # Check if login successful - more robust check
         if "userlogin" not in current_url and "login.xhtml" not in current_url:
-            logger.info("✅ Login successful")
+            logger.info("✅ Login successful (Enter key)")
             return True
 
-        # Sometimes page redirects but URL still shows login briefly
-        # Check for elements that only appear after login
+        # Strategy 2: Find and click the actual submit button/link
+        logger.info("🔄 Enter key didn't work, trying button click...")
+        login_button = None
+        login_selectors = [
+            (By.CSS_SELECTOR, "a.btn-login"),
+            (By.CSS_SELECTOR, "button.btn-login"),
+            (By.CLASS_NAME, "btn-login"),
+            (By.XPATH, "//a[contains(@class, 'btn-login')]"),
+            (By.XPATH, "//input[@type='submit']"),
+            (By.XPATH, "//button[@type='submit']"),
+        ]
+        for by, value in login_selectors:
+            login_button = wait_and_find(driver, by, value, timeout=3)
+            if login_button:
+                tag = login_button.tag_name
+                onclick = login_button.get_attribute('onclick') or ''
+                href = login_button.get_attribute('href') or ''
+                logger.info(f"✅ Found login button: tag={tag}, {by}={value}, onclick={onclick[:100]}, href={href[:100]}")
+                break
+
+        if login_button:
+            # Try JS click (more reliable for overlays)
+            driver.execute_script("arguments[0].click();", login_button)
+            logger.info("✅ Login button JS-clicked")
+            time.sleep(15)
+
+            current_url = driver.current_url.lower()
+            logger.info(f"📄 URL after button click: {driver.current_url}")
+
+            if "userlogin" not in current_url and "login.xhtml" not in current_url:
+                logger.info("✅ Login successful (button click)")
+                return True
+
+        # Strategy 3: Submit the form directly via JavaScript
+        logger.info("🔄 Button click didn't work, trying JS form submit...")
         try:
-            WebDriverWait(driver, 10).until(
-                lambda d: "userlogin" not in d.current_url.lower()
-            )
-            logger.info(f"✅ Login successful (after wait). URL: {driver.current_url}")
-            return True
-        except TimeoutException:
-            logger.error("❌ Login failed - still on login page")
-            logger.info(f"📄 Page source (first 2000 chars): {driver.page_source[:2000]}")
-            return False
+            driver.execute_script("""
+                var form = document.querySelector('form');
+                if (form) {
+                    // Try clicking any element with btn-login class
+                    var btn = document.querySelector('.btn-login');
+                    if (btn && btn.onclick) {
+                        btn.onclick();
+                    } else if (btn) {
+                        btn.click();
+                    } else {
+                        form.submit();
+                    }
+                }
+            """)
+            time.sleep(15)
+
+            current_url = driver.current_url.lower()
+            logger.info(f"📄 URL after JS submit: {driver.current_url}")
+
+            if "userlogin" not in current_url and "login.xhtml" not in current_url:
+                logger.info("✅ Login successful (JS submit)")
+                return True
+        except Exception as e:
+            logger.warning(f"JS submit failed: {e}")
+
+        # Check for error messages on the page
+        try:
+            error_msgs = driver.execute_script("""
+                var msgs = [];
+                var elements = document.querySelectorAll('.ui-messages-error, .ui-message-error, .error, .alert-danger, .login-error, [class*=error], [class*=Error]');
+                elements.forEach(function(el) {
+                    if (el.textContent.trim()) msgs.push(el.textContent.trim());
+                });
+                return msgs.join(' | ');
+            """)
+            if error_msgs:
+                logger.error(f"❌ Error messages on page: {error_msgs}")
+        except Exception:
+            pass
+
+        logger.error("❌ Login failed - all strategies exhausted")
+        logger.info(f"📄 Page source (first 3000 chars): {driver.page_source[:3000]}")
+        return False
 
     except Exception as e:
         logger.error(f"❌ Login error: {str(e)}")
