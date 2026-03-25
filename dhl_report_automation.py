@@ -36,7 +36,7 @@ END_DATE = datetime.now().strftime("%d-%m-%Y")
 
 # Credentials
 DHL_USERNAME = os.getenv('DHL_USERNAME', 'truongcongdai4@gmail.com')
-DHL_PASSWORD = os.getenv('DHL_PASSWORD', '@Love123123')
+DHL_PASSWORD = os.getenv('DHL_PASSWORD', '@Abc654321')
 
 def setup_chrome_driver():
     """Setup Chrome driver with anti-detection"""
